@@ -1,0 +1,33 @@
+import requests
+
+# Replace with your actual store info and token
+SHOP_NAME = "your-store-name"
+ACCESS_TOKEN = "your-access-token"
+
+# Shopify Admin API endpoint
+url = f"https://{SHOP_NAME}.myshopify.com/admin/api/2023-10/orders.json"
+
+# Headers with authentication
+headers = {
+    "X-Shopify-Access-Token": ACCESS_TOKEN,
+    "Content-Type": "application/json"
+}
+
+# Example: Fetch the 5 most recent orders
+params = {
+    "limit": 5,
+    "status": "any"  # can be 'open', 'closed', 'cancelled', etc.
+}
+
+response = requests.get(url, headers=headers, params=params)
+
+if response.status_code == 200:
+    orders = response.json().get("orders", [])
+    for order in orders:
+        print(f"Order ID: {order['id']}")
+        print(f"Customer: {order['customer']['first_name']} {order['customer']['last_name']}")
+        print(f"Email: {order['email']}")
+        print(f"Total: {order['total_price']} {order['currency']}")
+        print("---")
+else:
+    print("Error:", response.status_code, response.text)
