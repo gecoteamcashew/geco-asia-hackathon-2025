@@ -31,3 +31,5 @@ if response.status_code == 200:
         print("---")
 else:
     print("Error:", response.status_code, response.text)
+
+print('Hello world')
