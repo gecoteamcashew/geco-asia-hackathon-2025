@@ -1,3 +1,168 @@
+import os
+import sys
+import subprocess
+import json
+import re
+from pathlib import Path
+
+# --- Auto-install dependencies if missing ---
+REQUIRED = ["flask", "requests", "pandas", "waitress"]
+def ensure_deps():
+    import importlib
+    missing = []
+    for pkg in REQUIRED:
+        try:
+            importlib.import_module(pkg)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        print(f"Installing missing packages: {', '.join(missing)}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+
+ensure_deps()
+
+from flask import Flask, request, jsonify, render_template_string
+import requests
+import pandas as pd
+
+# --- Configuration ---
+BITDEER_API_KEY = os.getenv("BITDEER_API_KEY", "").strip()
+BITDEER_CHAT_URL = "https://api-inference.bitdeer.ai/v1/chat/completions"
+BITDEER_EMBED_URL = "https://api-inference.bitdeer.ai/v1/embeddings"  # optional, not used in MVP
+
+# Models
+MODEL_GPT_OSS = "openai/gpt-oss-120b"
+MODEL_QWEN3 = "Qwen/Qwen3-235B-A22B"
+DEFAULT_MODEL = MODEL_GPT_OSS
+
+# Data paths (Windows)
+DATA_DIR = Path(r"C:\Team_Cashew_Synthetic_Data")
+FAQS_CSV = DATA_DIR / "faqs.csv"
+INVENTORY_CSV = DATA_DIR / "product_inventory_master.csv"
+
+# --- App setup ---
+app = Flask(__name__)
+
+# --- Load data with safety ---
+def safe_read_csv(path: Path):
+    if not path.exists():
+        print(f"[WARN] CSV not found: {path}")
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        print(f"[INFO] Loaded {path.name} with {len(df)} rows.")
+        return df
+    except UnicodeDecodeError:
+        df = pd.read_csv(path, encoding="latin-1")
+        print(f"[INFO] Loaded {path.name} (latin-1) with {len(df)} rows.")
+        return df
+    except Exception as e:
+        print(f"[ERROR] Failed to read {path}: {e}")
+        return pd.DataFrame()
+
+faqs_df = safe_read_csv(FAQS_CSV)
+inv_df = safe_read_csv(INVENTORY_CSV)
+
+# Normalize column names
+faqs_df.columns = [c.strip().lower() for c in faqs_df.columns] if not faqs_df.empty else []
+inv_df.columns = [c.strip().lower() for c in inv_df.columns] if not inv_df.empty else []
+
+# Guess likely columns
+FAQ_Q_COL = next((c for c in faqs_df.columns if "question" in c), None)
+FAQ_A_COL = next((c for c in faqs_df.columns if "answer" in c or "response" in c), None)
+
+INV_NAME_COL = next((c for c in inv_df.columns if "product" in c and "name" in c), None)
+if not INV_NAME_COL and "product" in inv_df.columns:
+    INV_NAME_COL = "product"
+INV_SKU_COL = next((c for c in inv_df.columns if c in ("sku","id","product_id","item_id")), None)
+INV_STOCK_COL = next((c for c in inv_df.columns if "stock" in c or "qty" in c or "quantity" in c), None)
+INV_PRICE_COL = next((c for c in inv_df.columns if "price" in c or "cost" in c), None)
+INV_VARIANT_COL = next((c for c in inv_df.columns if "size" in c or "variant" in c or "grade" in c), None)
+
+def search_faqs(query: str, top_k: int = 3):
+    if faqs_df.empty or not FAQ_Q_COL or not FAQ_A_COL:
+        return []
+    q = query.lower()
+    def score_row(row):
+        text = f"{row.get(FAQ_Q_COL,'')} {row.get(FAQ_A_COL,'')}".lower()
+        # simple keyword overlap
+        words = re.findall(r"[a-z0-9]+", q)
+        return sum(1 for w in set(words) if w in text)
+    scored = []
+    for _, row in faqs_df.iterrows():
+        s = score_row(row)
+        if s > 0:
+            scored.append((s, row))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    results = []
+    for s, r in scored[:top_k]:
+        results.append({
+            "question": str(r.get(FAQ_Q_COL, "")),
+            "answer": str(r.get(FAQ_A_COL, "")),
+            "_score": s
+        })
+    return results
+
+def search_inventory(query: str, top_k: int = 5):
+    if inv_df.empty or not INV_NAME_COL:
+        return []
+    q = query.lower()
+    words = set(re.findall(r"[a-z0-9]+", q))
+    hits = []
+    for _, row in inv_df.iterrows():
+        name = str(row.get(INV_NAME_COL, ""))
+        variant = str(row.get(INV_VARIANT_COL, ""))
+        sku = str(row.get(INV_SKU_COL, ""))
+        text = f"{name} {variant} {sku}".lower()
+        score = sum(1 for w in words if w and w in text)
+        if score > 0:
+            hits.append((score, row))
+    hits.sort(key=lambda x: x[0], reverse=True)
+    results = []
+    for s, r in hits[:top_k]:
+        item = {
+            "product_name": str(r.get(INV_NAME_COL, "")),
+            "variant": str(r.get(INV_VARIANT_COL, "")) if INV_VARIANT_COL else "",
+            "sku": str(r.get(INV_SKU_COL, "")) if INV_SKU_COL else "",
+            "stock": r.get(INV_STOCK_COL, "") if INV_STOCK_COL else "",
+            "price": r.get(INV_PRICE_COL, "") if INV_PRICE_COL else "",
+            "_score": s
+        }
+        results.append(item)
+    return results
+
+def build_system_prompt():
+    return (
+        "You are a helpful customer support assistant for a company that sells nuts. "
+        "Answer concisely, be friendly and factual. If you reference inventory or policies, mention the source briefly. "
+        "If unsure, say you’ll check with the team."
+    )
+
+def build_user_prompt(user_msg, faq_hits, inv_hits):
+    context_lines = []
+    if faq_hits:
+        context_lines.append("Relevant FAQs:")
+        for i, h in enumerate(faq_hits, 1):
+            context_lines.append(f"- Q{i}: {h['question']}")
+            context_lines.append(f"  A{i}: {h['answer']}")
+    if inv_hits:
+        context_lines.append("Relevant Inventory:")
+        for i, item in enumerate(inv_hits, 1):
+            name = item.get("product_name","")
+            variant = item.get("variant","")
+            sku = item.get("sku","")
+            stock = item.get("stock","")
+            price = item.get("price","")
+            context_lines.append(f"- {name} {variant} (SKU: {sku}) | Stock: {stock} | Price: {price}")
+    context_block = "\n".join(context_lines) if context_lines else "No internal context found."
+    prompt = (
+        f"User message:\n{user_msg}\n\n"
+        f"Internal context:\n{context_block}\n\n"
+        "Please answer succinctly (2-6 sentences). If pricing/stock mentioned, include numbers. "
+        "If policy is unclear, provide best available info and offer to follow up."
+    )
+    return prompt
+
 def call_bitdeer_chat(model: str, messages: list, temperature: float = 0.3, max_tokens: int = 512):
     if not BITDEER_API_KEY:
         raise RuntimeError("BITDEER_API_KEY environment variable not set.")
@@ -18,20 +183,198 @@ def call_bitdeer_chat(model: str, messages: list, temperature: float = 0.3, max_
     resp = requests.post(BITDEER_CHAT_URL, headers=headers, data=json.dumps(payload), timeout=60)
     if not resp.ok:
         raise RuntimeError(f"Bitdeer API error {resp.status_code}: {resp.text}")
+    data = resp.json()
+    # Standard OpenAI-like response structure
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return content.strip() if content else "(No content returned)"
+
+# --- Flask Routes ---
+INDEX_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cashew Chatbot (Local)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background:#0f172a; color:#e5e7eb; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; }
+    .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 24px; margin: 0 0 12px; }
+    .card { background: #111827; border:1px solid rgba(255,255,255,0.08); border-radius: 12px; padding:16px; }
+    label { display:block; font-size: 14px; margin: 8px 0 4px; color:#cbd5e1; }
+    select, input[type=text], textarea { width:100%; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,0.12); border-radius:8px; padding:10px; box-sizing:border-box; }
+    button { background:#2563eb; color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; }
+    button:disabled { background:#334155; cursor:not-allowed; }
+    .row { display:flex; gap:16px; }
+    .row > div { flex:1; }
+    .chat { margin-top: 16px; }
+    .msg { padding:10px 12px; margin:8px 0; border-radius:8px; }
+    .user { background:#1f2937; }
+    .bot { background:#0b1220; border:1px solid rgba(255,255,255,0.08); }
+    .small { font-size:12px; color:#94a3b8; }
+    .footer { margin-top:12px; font-size:12px; color:#94a3b8; }
+    .ctx { font-size:12px; color:#a3e635; white-space:pre-wrap; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Cashew Chatbot (Local Proof of Concept)</h1>
+    <div class="card">
+      <div class="row">
+        <div>
+          <label for="model">Model</label>
+          <select id="model">
+            <option value="{{MODEL_GPT_OSS}}">GPT-OSS (120B)</option>
+            <option value="{{MODEL_QWEN3}}">Qwen3 (235B)</option>
+          </select>
+        </div>
+        <div>
+          <label>Data Directory</label>
+          <input type="text" value="{{data_dir}}" disabled>
+          <div class="small">faqs.csv and product_inventory_master.csv will be used if found.</div>
+        </div>
+      </div>
+
+      <div class="chat" id="chat"></div>
+
+      <label for="msg">Your message</label>
+      <textarea id="msg" rows="3" placeholder="Type a customer question... e.g., Do you have W320 raw cashews in stock?"></textarea>
+      <div style="margin-top:8px">
+        <button id="send">Send</button>
+        <span class="small" id="status"></span>
+      </div>
+
+      <div class="footer">
+        API key loaded from environment: <strong>{{ 'Yes' if has_key else 'No' }}</strong>.
+        This is a local demo; do not expose publicly.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const msg = document.getElementById('msg');
+    const model = document.getElementById('model');
+    const sendBtn = document.getElementById('send');
+    const status = document.getElementById('status');
+
+    function addMsg(text, who) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + (who === 'user' ? 'user' : 'bot');
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function addContext(text) {
+      const pre = document.createElement('div');
+      pre.className = 'ctx';
+      pre.textContent = text;
+      chat.appendChild(pre);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function send() {
+      const content = msg.value.trim();
+      if (!content) return;
+      addMsg(content, 'user');
+      msg.value = '';
+      sendBtn.disabled = true;
+      status.textContent = 'Thinking...';
+
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: content, model: model.value })
+        });
+        const data = await res.json();
+        if (data.context) {
+          addContext("Data I used:\\n" + data.context);
+        }
+        addMsg(data.reply || '(no reply)', 'bot');
+      } catch (e) {
+        addMsg('Error: ' + (e && e.message ? e.message : e), 'bot');
+      } finally {
+        status.textContent = '';
+        sendBtn.disabled = false;
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    msg.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send();
+    });
+  </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(
+        INDEX_HTML,
+        MODEL_GPT_OSS=MODEL_GPT_OSS,
+        MODEL_QWEN3=MODEL_QWEN3,
+        data_dir=str(DATA_DIR),
+        has_key=bool(BITDEER_API_KEY),
+    )
+
+@app.route("/chat", methods=["POST"])
+def chat():
     try:
-        data = resp.json()
+        data = request.get_json(force=True)
+        user_msg = (data.get("message") or "").strip()
+        model = data.get("model") or DEFAULT_MODEL
+        if not user_msg:
+            return jsonify({"error": "Empty message"}), 400
+
+        # Retrieve related data
+        faq_hits = search_faqs(user_msg, top_k=3)
+        inv_hits = search_inventory(user_msg, top_k=5)
+
+        # Build prompts
+        sys_prompt = build_system_prompt()
+        user_prompt = build_user_prompt(user_msg, faq_hits, inv_hits)
+
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        # Call model
+        reply = call_bitdeer_chat(model, messages, temperature=0.2, max_tokens=512)
+
+        # Prepare a small context echo for UI
+        ctx_lines = []
+        if faq_hits:
+            ctx_lines.append("FAQs:")
+            for h in faq_hits:
+                ctx_lines.append(f"- {h['question']} -> {h['answer']}")
+        if inv_hits:
+            ctx_lines.append("Inventory:")
+            for it in inv_hits:
+                name = it.get("product_name","")
+                variant = it.get("variant","")
+                sku = it.get("sku","")
+                stock = it.get("stock","")
+                price = it.get("price","")
+                ctx_lines.append(f"- {name} {variant} (SKU {sku}) Stock:{stock} Price:{price}")
+        ctx_text = "\n".join(ctx_lines)
+
+        return jsonify({"reply": reply, "context": ctx_text})
     except Exception as e:
-        raise RuntimeError(f"Invalid JSON from API: {e}; body: {resp.text[:500]}")
-    # Try multiple known shapes
-    content = ""
+        return jsonify({"error": str(e)}), 500
+
+def run():
+    # Prefer waitress for stability on Windows
     try:
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    except Exception:
-        pass
-    if not content:
-        # Some providers return 'choices[0].text' or 'choices[0].delta/content' on non-stream
-        content = data.get("choices", [{}])[0].get("text") or ""
-    if not content:
-        # Last resort: show part of the payload for debugging (safe)
-        raise RuntimeError(f"No content in response. Raw: {json.dumps(data)[:800]}")
-    return content.strip()
+        from waitress import serve
+        print("Starting server with waitress on http://127.0.0.1:5000")
+        serve(app, host="127.0.0.1", port=5000)
+    except Exception as e:
+        print(f"[WARN] Waitress failed ({e}); falling back to Flask dev server.")
+        app.run(host="127.0.0.1", port=5000, debug=False)
+
+if __name__ == "__main__":
+    run()
