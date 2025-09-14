@@ -11,27 +11,3 @@ def call_bitdeer_chat(model: str, messages: list, temperature: float = 0.3, max_
         "max_tokens": max_tokens,
         "temperature": temperature,
         "frequency_penalty": 0,
-        "presence_penalty": 0,
-        "top_p": 1,
-        "stream": False
-    }
-    resp = requests.post(BITDEER_CHAT_URL, headers=headers, data=json.dumps(payload), timeout=60)
-    if not resp.ok:
-        raise RuntimeError(f"Bitdeer API error {resp.status_code}: {resp.text}")
-    try:
-        data = resp.json()
-    except Exception as e:
-        raise RuntimeError(f"Invalid JSON from API: {e}; body: {resp.text[:500]}")
-    # Try multiple known shapes
-    content = ""
-    try:
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    except Exception:
-        pass
-    if not content:
-        # Some providers return 'choices[0].text' or 'choices[0].delta/content' on non-stream
-        content = data.get("choices", [{}])[0].get("text") or ""
-    if not content:
-        # Last resort: show part of the payload for debugging (safe)
-        raise RuntimeError(f"No content in response. Raw: {json.dumps(data)[:800]}")
-    return content.strip()
