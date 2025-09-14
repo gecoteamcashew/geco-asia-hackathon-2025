@@ -1,35 +1,37 @@
-import requests
-
-# Replace with your actual store info and token
-SHOP_NAME = "your-store-name"
-ACCESS_TOKEN = "your-access-token"
-
-# Shopify Admin API endpoint
-url = f"https://{SHOP_NAME}.myshopify.com/admin/api/2023-10/orders.json"
-
-# Headers with authentication
-headers = {
-    "X-Shopify-Access-Token": ACCESS_TOKEN,
-    "Content-Type": "application/json"
-}
-
-# Example: Fetch the 5 most recent orders
-params = {
-    "limit": 5,
-    "status": "any"  # can be 'open', 'closed', 'cancelled', etc.
-}
-
-response = requests.get(url, headers=headers, params=params)
-
-if response.status_code == 200:
-    orders = response.json().get("orders", [])
-    for order in orders:
-        print(f"Order ID: {order['id']}")
-        print(f"Customer: {order['customer']['first_name']} {order['customer']['last_name']}")
-        print(f"Email: {order['email']}")
-        print(f"Total: {order['total_price']} {order['currency']}")
-        print("---")
-else:
-    print("Error:", response.status_code, response.text)
-
-print('Hello world')
+def call_bitdeer_chat(model: str, messages: list, temperature: float = 0.3, max_tokens: int = 512):
+    if not BITDEER_API_KEY:
+        raise RuntimeError("BITDEER_API_KEY environment variable not set.")
+    headers = {
+        "Authorization": f"Bearer {BITDEER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "top_p": 1,
+        "stream": False
+    }
+    resp = requests.post(BITDEER_CHAT_URL, headers=headers, data=json.dumps(payload), timeout=60)
+    if not resp.ok:
+        raise RuntimeError(f"Bitdeer API error {resp.status_code}: {resp.text}")
+    try:
+        data = resp.json()
+    except Exception as e:
+        raise RuntimeError(f"Invalid JSON from API: {e}; body: {resp.text[:500]}")
+    # Try multiple known shapes
+    content = ""
+    try:
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    except Exception:
+        pass
+    if not content:
+        # Some providers return 'choices[0].text' or 'choices[0].delta/content' on non-stream
+        content = data.get("choices", [{}])[0].get("text") or ""
+    if not content:
+        # Last resort: show part of the payload for debugging (safe)
+        raise RuntimeError(f"No content in response. Raw: {json.dumps(data)[:800]}")
+    return content.strip()
