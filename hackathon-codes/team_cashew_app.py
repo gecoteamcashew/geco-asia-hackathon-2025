@@ -1,12 +1,12 @@
 # team_cashew_app.py
 # Nibbles (customer) + Clarity (staff)
-# - Robust CSV ingestion (recursive file find, delimiter/encoding inference, header/value cleanup)
+# - Robust CSV ingestion (recursive finder, delimiter/encoding inference, header/value cleanup)
 # - Product index from SKU Master, Sales Descriptions, and optional Catalogue_Flat
 # - Customer replies: friendly, data-only (FAQ / CSVs). No AI facts.
 # - Staff analytics: require "Staff query:"; default to PRODUCT NAMES (not SKUs).
-#   Only show SKUs if the user explicitly asks for them (e.g., "with SKU", "by SKU", "show SKUs", "product code").
+#   Only show SKUs if explicitly asked (e.g., "with SKU", "by SKU", "show SKUs", "product code").
 # - Multilingual I/O focused on SEA + CJK: script/lexicon detection, translation-only via GPT-OSS.
-# - Precise small-talk handler for English + SEA/CJK greetings.
+# - Precise small-talk handler for English + SEA/CJK greetings (no short-text heuristic).
 # - Debug endpoints: /debug/sources, /debug/search, /health
 
 import os, sys, re, subprocess, logging
@@ -81,7 +81,7 @@ FILE_HINTS = {
 # -----------------------------
 def _call_gpt_translate(system_prompt: str, user_text: str, max_tokens=300) -> str:
     if not BITDEER_API_KEY:
-        return ""  # translation disabled
+        return ""  # translation disabled -> caller will fallback to original
     try:
         r = requests.post(
             BITDEER_URL,
@@ -184,7 +184,7 @@ FRIENDLY_SORRY = [
 def _pick(items): return items[0]  # deterministic
 
 # -----------------------------
-# Precise small-talk (English + SEA/CJK)
+# Precise small-talk (English + SEA/CJK), NO short-text fallback
 # -----------------------------
 SMALLTALK_EN = re.compile(
     r"^(?:hi|hello|hey|good (?:morning|afternoon|evening)|thanks|thank you|bye|goodbye)[.! ]*$",
@@ -201,18 +201,40 @@ GREET_SEA = re.compile(
     re.I
 )
 INTENT_WORDS = re.compile(
-    r"\b(order|refund|return|ship|shipping|deliver|delivery|allergen|ingredient|have|do you have|find|search)\b",
+    r"\b(order|refund|return|ship|shipping|deliver|delivery|arrive|arrival|eta|status|track|tracking|allergen|ingredient|have|do you have|find|search)\b",
+    re.I
+)
+INTENT_SEA = re.compile(
+    r"(?:"
+    # Chinese
+    r"有.*吗|有吗|有没有|想买|购买|下单|退款|退货|配送|运费|寄送|发货|送货|多久|几天|到货|查询|追踪"
+    r"|"
+    # Japanese
+    r"ありますか|購入|買えますか|注文|返品|返金|配達|配送|送料|どのくらい|到着|追跡|トラッキング"
+    r"|"
+    # Korean
+    r"있나요|있습니까|구매|주문|환불|반품|배송|얼마|며칠|도착|추적"
+    r"|"
+    # Vietnamese
+    r"có.*không|mua|đặt hàng|hoàn tiền|trả hàng|vận chuyển|giao hàng|bao lâu|mất mấy ngày|đến khi nào|theo dõi|giá"
+    r"|"
+    # Malay / Indonesian
+    r"ada|punya|pesan|tempah|penghantaran|pengiriman|bayaran balik|refund|pulangan|berapa hari|berapa lama|hantar|sampai bila|jejak|penjejakan|harga"
+    r"|"
+    # Tagalog / Filipino
+    r"meron|mayroon|paano|magkano|mag-order|umorder|i-refund|refund|ibalik|padala|ilang araw|gaano katagal|darating|i-track|subaybayan|presyo"
+    r")",
     re.I
 )
 def is_smalltalk(message: str) -> bool:
     s = message.strip()
     sl = s.lower()
-    if INTENT_WORDS.search(sl):
+    if INTENT_WORDS.search(sl) or INTENT_SEA.search(s):
         return False
     if SMALLTALK_EN.match(sl):
         return True
     lang = detect_lang_safe(s)
-    if lang != "en" and (GREET_SEA.search(sl) or len(s) <= 12):
+    if lang != "en" and GREET_SEA.search(sl):
         return True
     return False
 
@@ -479,19 +501,30 @@ class CustomerQA:
         if any(w in ql for w in ["bye","goodbye"]):      return "Bye for now! Have a great day."
         if any(w in ql for w in ["how are you","how r u","how’s it going","hows it going"]):
             return "I’m doing great and ready to help with snacks!"
-        return _pick(FRIENDLY_GREETS)
+        return FRIENDLY_GREETS[0]
+
+    # --- FAQ matching: answer-only (never echo a question) ---
+    def faq_best_match(self, query: str) -> tuple[int, str, str]:
+        """Return (score, matched_question, matched_answer). Score is 0–100."""
+        faq = self.dm.tables.get("faq", pd.DataFrame())
+        if faq.empty:
+            return (0, "", "")
+        qn = self._normalize(query)
+        best_score, best_q, best_a = -1, "", ""
+        for _, r in faq.iterrows():
+            q_txt = str(r.get("question","")).strip()
+            a_txt = str(r.get("answer","")).strip()
+            cand  = self._normalize(q_txt)
+            score = max(fuzz.WRatio(qn, cand), fuzz.token_set_ratio(qn, cand), fuzz.partial_ratio(qn, cand))
+            if score > best_score:
+                best_score, best_q, best_a = score, q_txt, a_txt
+        return (max(best_score,0), best_q, best_a)
 
     def answer_from_faq(self, query: str) -> Optional[str]:
-        faq = self.dm.tables.get("faq", pd.DataFrame())
-        if faq.empty: return None
-        qn = self._normalize(query)
-        best = (-1, None)
-        for _, r in faq.iterrows():
-            cand = self._normalize(r.get("question",""))
-            score = max(fuzz.WRatio(qn, cand), fuzz.token_set_ratio(qn, cand), fuzz.partial_ratio(qn, cand))
-            if score > best[0]:
-                best = (score, str(r.get("answer","")).strip())
-        return best[1] if best[0] >= 70 and best[1] else None
+        score, q_txt, a_txt = self.faq_best_match(query)
+        if score >= 70 and a_txt:
+            return a_txt
+        return None
 
     def product_matches(self, query: str, limit=12) -> List[str]:
         if not self.dm.product_index: return []
@@ -523,43 +556,50 @@ class CustomerQA:
     def answer_en(self, raw_en: str) -> str:
         q = self._normalize(raw_en)
 
+        # Order placement
         if re.search(r"\b(order|place.*order|how.*order)\b", q):
             a = self.answer_from_faq("order")
-            return a if a else f"{_pick(FRIENDLY_SORRY)} I couldn’t find order instructions in the FAQ."
+            return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find order instructions in the FAQ CSV."
 
-        if re.search(r"\b(ship|shipping|delivery|deliver|how long)\b", q):
-            a = self.answer_from_faq("shipping")
-            return a if a else "I can help check your shipping details — if you share your order number, I’ll look it up."
+        # Shipping / delivery / ETA / tracking
+        if re.search(r"\b(ship|shipping|deliver|delivery|arrive|arrival|eta|status|track|tracking)\b", q):
+            a = self.answer_from_faq("shipping") or self.answer_from_faq("delivery") or self.answer_from_faq("tracking")
+            return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find shipping/ETA info in the FAQ CSV."
 
+        # Refunds / returns
         if re.search(r"\b(refund|return|replace)\b", q):
-            a = self.answer_from_faq("refund")
-            return a if a else "I’m sorry this happened. Please share your order number and I’ll check our refund/return steps."
+            a = self.answer_from_faq("refund") or self.answer_from_faq("return")
+            return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find refund/return info in the FAQ CSV."
 
+        # Allergens / nutrition
         if re.search(r"\b(allergen|ingredient|nutrition|peanut|nut)\b", q):
-            a = self.answer_from_faq(raw_en)
+            a = self.answer_from_faq(raw_en) or self.answer_from_faq("allergen") or self.answer_from_faq("ingredient")
             if a:
                 return a
             hits = self.product_matches(raw_en)
             if hits:
-                return f"{_pick(FRIENDLY_OK)} Related products:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one and I’ll check details."
-            return f"{_pick(FRIENDLY_SORRY)} I couldn’t find allergen or nutrition details in the CSVs."
+                return f"{FRIENDLY_OK[0]} Related products:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one and I’ll check details."
+            return f"{FRIENDLY_SORRY[0]} I couldn’t find allergen or nutrition details in the CSVs."
 
+        # Healthy suggestions
         if re.search(r"(healthy|diet|light|low cal|low-calorie|low calorie)", q):
             hits = self.healthy_suggestions()
             if hits:
                 return "Here are some lighter picks:\n" + "\n".join(f"- {h}" for h in hits) + "\nWant more like these?"
-            return f"{_pick(FRIENDLY_SORRY)} I couldn’t find healthier options in the product list."
+            return f"{FRIENDLY_SORRY[0]} I couldn’t find healthier options in the product list."
 
+        # Generic product search (and short “have … ?” messages)
         if re.search(r"(do you have|have you got|looking for|i want|i need|find|search|any)\b", q) or len(q.split()) <= 6:
             hits = self.product_matches(raw_en)
             if hits:
-                return f"{_pick(FRIENDLY_OK)} I found these:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one you mean and I can check availability."
+                return f"{FRIENDLY_OK[0]} I found these:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one you mean and I can check availability."
 
+        # FAQ fallback (answer only; never echo a question)
         a = self.answer_from_faq(raw_en)
         if a:
             return a
 
-        return f"{_pick(FRIENDLY_SORRY)} I couldn’t find that in the FAQ or products. If you share a product name or order number, I’ll check again."
+        return f"{FRIENDLY_SORRY[0]} I couldn’t find that in the FAQ or products. If you share a product name or order number, I’ll check again."
 
 # -----------------------------
 # Staff analytics (English core; translation wrapper in route)
@@ -627,10 +667,11 @@ class StaffAnalytics:
 
         # CASE A: Use product names in Sales (Description) by default
         if desc_col and not wants_sku:
+            work = df
             if kw:
-                df = df[df[desc_col].astype(str).str.contains(kw, case=False, na=False)]
-                if df.empty: return f"No matching sales for '{kw}' in that period."
-            grouped = df.groupby(desc_col)[rev_col].sum().sort_values(ascending=False)
+                work = work[work[desc_col].astype(str).str.contains(kw, case=False, na=False)]
+                if work.empty: return f"No matching sales for '{kw}' in that period."
+            grouped = work.groupby(desc_col)[rev_col].sum().sort_values(ascending=False)
             label_fmt = lambda k, v: f"- {k}: ${v:,.2f}"
 
         # CASE B: Join Sales SKU -> SKU Master Product_Name (still names by default)
@@ -650,10 +691,9 @@ class StaffAnalytics:
 
         # CASE C: User explicitly asked for SKUs
         elif wants_sku and sku_in_sales:
-            key_col = sku_in_sales
             work = df
+            key_col = sku_in_sales
             if kw:
-                # Apply kw to Description if present, else to SKU
                 if desc_col:
                     work = work[work[desc_col].astype(str).str.contains(kw, case=False, na=False)]
                 else:
@@ -670,10 +710,11 @@ class StaffAnalytics:
                     name_fallback = c; break
             if not name_fallback:
                 return "Sales file is missing product names (no Description and no usable SKU→name mapping)."
+            work = df
             if kw:
-                df = df[df[name_fallback].astype(str).str.contains(kw, case=False, na=False)]
-                if df.empty: return f"No matching sales for '{kw}' in that period."
-            grouped = df.groupby(name_fallback)[rev_col].sum().sort_values(ascending=False)
+                work = work[work[name_fallback].astype(str).str.contains(kw, case=False, na=False)]
+                if work.empty: return f"No matching sales for '{kw}' in that period."
+            grouped = work.groupby(name_fallback)[rev_col].sum().sort_values(ascending=False)
             label_fmt = lambda k, v: f"- {k}: ${v:,.2f}"
 
         if grouped.empty:
