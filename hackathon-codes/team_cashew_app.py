@@ -7,6 +7,8 @@
 #   Only show SKUs if explicitly asked (e.g., "with SKU", "by SKU", "show SKUs", "product code").
 # - Multilingual I/O focused on SEA + CJK: script/lexicon detection, translation-only via GPT-OSS.
 # - Precise small-talk handler for English + SEA/CJK greetings (no short-text heuristic).
+# - FAQ sanitization: never echo a question as an “answer”.
+# - Allergy-first flow with cautious CSV-based suggestions and disclaimer.
 # - Debug endpoints: /debug/sources, /debug/search, /health
 
 import os, sys, re, subprocess, logging
@@ -201,7 +203,8 @@ GREET_SEA = re.compile(
     re.I
 )
 INTENT_WORDS = re.compile(
-    r"\b(order|refund|return|ship|shipping|deliver|delivery|arrive|arrival|eta|status|track|tracking|allergen|ingredient|have|do you have|find|search)\b",
+    r"\b(order|refund|return|ship|shipping|deliver|delivery|arrive|arrival|eta|status|track|tracking|"
+    r"allergen|ingredient|have|do you have|in stock|stock|available|availability|find|search)\b",
     re.I
 )
 INTENT_SEA = re.compile(
@@ -296,6 +299,15 @@ def filter_by_date(df: pd.DataFrame, start, end):
 # -----------------------------
 # General utils
 # -----------------------------
+QUESTION_LEAD = re.compile(
+    r"^(what|how|when|where|which|who|whom|whose|why|do|does|did|is|are|am|can|could|may|might|should|would)\b",
+    re.I
+)
+def looks_like_question(text: str) -> bool:
+    t = (text or "").strip()
+    if not t: return False
+    return t.endswith("?") or bool(QUESTION_LEAD.match(t))
+
 def _norm(s: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(s).lower())
 
@@ -389,9 +401,18 @@ class DataManager:
         cols = [str(c).strip().lower() for c in df.columns]
         q_idx = cols.index("question") if "question" in cols else 0
         a_idx = cols.index("answer")   if "answer" in cols and len(cols) > 1 else (1 if len(cols) > 1 else None)
+
         out = pd.DataFrame()
-        out["question"] = df.iloc[:, q_idx].astype(str)
-        out["answer"]   = df.iloc[:, a_idx].astype(str) if a_idx is not None else ""
+        out["question"] = df.iloc[:, q_idx].astype(str).str.strip()
+        out["answer"]   = df.iloc[:, a_idx].astype(str).str.strip() if a_idx is not None else ""
+
+        # sanitize: drop rows with empty/garbage answers, or answers that look like questions
+        before = len(out)
+        out = out[~out["answer"].eq("")]
+        out = out[out["answer"].str.lower() != out["question"].str.lower()]
+        out = out[~out["answer"].apply(looks_like_question)]
+        out = out.drop_duplicates(subset=["question"], keep="first").reset_index(drop=True)
+        log.info(f"[faq] sanitized {before} -> {len(out)} rows (removed empty/question-like answers)")
         return out
 
     def _choose_name_col(self, df: pd.DataFrame) -> Optional[str]:
@@ -522,8 +543,11 @@ class CustomerQA:
 
     def answer_from_faq(self, query: str) -> Optional[str]:
         score, q_txt, a_txt = self.faq_best_match(query)
-        if score >= 70 and a_txt:
-            return a_txt
+        if score >= 70:
+            a = (a_txt or "").strip()
+            if not a or looks_like_question(a) or a.lower() == (q_txt or "").strip().lower():
+                return None
+            return a
         return None
 
     def product_matches(self, query: str, limit=12) -> List[str]:
@@ -553,25 +577,79 @@ class CustomerQA:
                     return picks
         return picks
 
+    def product_matches_excluding(self, exclude_terms: List[str], seed_terms: List[str], limit=10) -> List[str]:
+        # start from “seed” families (e.g., fruit/berries) then broaden
+        seen = set()
+        results = []
+        ex = [t.lower() for t in exclude_terms]
+
+        def ok(name: str) -> bool:
+            s = name.lower()
+            return all(x not in s for x in ex)
+
+        # seed-driven hits first
+        for seed in seed_terms:
+            for m in self.product_matches(seed, limit=limit*2):
+                if ok(m) and m not in seen:
+                    results.append(m); seen.add(m)
+                    if len(results) >= limit: return results
+
+        # general pass over the whole index
+        for m in self.product_matches("snack", limit=limit*4) + self.dm.product_index:
+            if ok(m) and m not in seen:
+                results.append(m); seen.add(m)
+                if len(results) >= limit: break
+        return results[:limit]
+
     def answer_en(self, raw_en: str) -> str:
         q = self._normalize(raw_en)
 
-        # Order placement
+        # ---- Allergy-first: handle “allergic to X” before anything else ----
+        m_allergy = re.search(r"\ballergic to\s+([a-zA-Z\- ]+)\b", q)
+        if m_allergy:
+            allergen = m_allergy.group(1).strip()
+            seeds = ["fruit", "berries", "apricot", "cranberry", "blueberry", "chips", "mix", "almond", "pistachio"]
+            picks = self.product_matches_excluding([allergen], seeds, limit=8)
+            if picks:
+                return (
+                    f"I can’t confirm allergen safety from CSV data alone. "
+                    f"Here are items whose names don’t mention “{allergen}”:\n"
+                    + "\n".join(f"- {p}" for p in picks)
+                    + "\nPlease double-check labels or the catalogue for full allergen details."
+                )
+            return (
+                "I can’t confirm allergen safety from CSV data alone, and I couldn’t find suitable items by name. "
+                "Please check the catalogue or packaging for detailed allergen information."
+            )
+
+        # ---- Availability / “in stock” intent ----
+        if re.search(r"\b(do you have|have you got|in stock|stock|available|availability)\b", q):
+            hits = self.product_matches(raw_en)
+            if hits:
+                return (
+                    f"{FRIENDLY_OK[0]} We carry these matches:\n"
+                    + "\n".join(f"- {h}" for h in hits[:10])
+                    + "\nIf you’re after a specific size or flavor, tell me and I’ll narrow it down."
+                )
+            a = self.answer_from_faq(raw_en)
+            return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find that product in our catalogue."
+
+        # ---- Orders ----
         if re.search(r"\b(order|place.*order|how.*order)\b", q):
             a = self.answer_from_faq("order")
             return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find order instructions in the FAQ CSV."
 
-        # Shipping / delivery / ETA / tracking
+        # ---- Shipping / ETA / tracking ----
         if re.search(r"\b(ship|shipping|deliver|delivery|arrive|arrival|eta|status|track|tracking)\b", q):
             a = self.answer_from_faq("shipping") or self.answer_from_faq("delivery") or self.answer_from_faq("tracking")
             return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find shipping/ETA info in the FAQ CSV."
 
-        # Refunds / returns
+        # ---- Refunds / returns ----
         if re.search(r"\b(refund|return|replace)\b", q):
             a = self.answer_from_faq("refund") or self.answer_from_faq("return")
             return a if a else f"{FRIENDLY_SORRY[0]} I couldn’t find refund/return info in the FAQ CSV."
 
-        # Allergens / nutrition
+        # ---- Allergens / nutrition (generic mentions after specific “allergic to …”) ----
         if re.search(r"\b(allergen|ingredient|nutrition|peanut|nut)\b", q):
             a = self.answer_from_faq(raw_en) or self.answer_from_faq("allergen") or self.answer_from_faq("ingredient")
             if a:
@@ -581,20 +659,20 @@ class CustomerQA:
                 return f"{FRIENDLY_OK[0]} Related products:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one and I’ll check details."
             return f"{FRIENDLY_SORRY[0]} I couldn’t find allergen or nutrition details in the CSVs."
 
-        # Healthy suggestions
+        # ---- Healthy suggestions ----
         if re.search(r"(healthy|diet|light|low cal|low-calorie|low calorie)", q):
             hits = self.healthy_suggestions()
             if hits:
                 return "Here are some lighter picks:\n" + "\n".join(f"- {h}" for h in hits) + "\nWant more like these?"
             return f"{FRIENDLY_SORRY[0]} I couldn’t find healthier options in the product list."
 
-        # Generic product search (and short “have … ?” messages)
+        # ---- Generic product search (short queries) ----
         if re.search(r"(do you have|have you got|looking for|i want|i need|find|search|any)\b", q) or len(q.split()) <= 6:
             hits = self.product_matches(raw_en)
             if hits:
                 return f"{FRIENDLY_OK[0]} I found these:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one you mean and I can check availability."
 
-        # FAQ fallback (answer only; never echo a question)
+        # ---- FAQ fallback (answer only; never echo a question) ----
         a = self.answer_from_faq(raw_en)
         if a:
             return a
