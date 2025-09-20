@@ -1,0 +1,221 @@
+Customer_ID,Customer_Name,Global_Dimension,Location,Age_Group,Gender,Purpose_of_Purchase,Segment,LTV
+CUST0001,Troy Ward,General,Riversview,35-44,Male,Gift,Gift Buyers,340.35
+CUST0002,Connie Brewer,Online,East Heather,18-24,Male,Home,Digital Bargain Hunters,239.01
+CUST0003,Monica Thomas DVM,Online,Mezafurt,18-24,Male,Personal,Digital Bargain Hunters,139.32
+CUST0004,William Yates,General,Port Amy,45-54,Male,Gift,Gift Buyers,193.88
+CUST0005,Michael Romero,Online,Wallaceton,35-44,Male,Home,Digital Bargain Hunters,202.04
+CUST0006,Tricia Gonzalez,General,Fredville,45-54,Male,Gift,Gift Buyers,208.64
+CUST0007,James Ruiz,Retail,Louisview,60+,Female,Family,Loyalists,1458.28
+CUST0008,Daniel Jones,Retail,Harringtonchester,40-49,Female,Home,Loyalists,1123.93
+CUST0009,Sydney Anderson,Modern,North Denise,35-44,Female,Health/Organic,Health-conscious Modern Consumers,672.56
+CUST0010,Edward Gutierrez,Retail,North Michael,60+,Male,Family,Loyalists,1254.75
+CUST0011,Jenny Lee,Online,Port Lisafort,35-44,Male,Home,Digital Bargain Hunters,224.06
+CUST0012,Samantha Armstrong,Online,Lake Johnny,25-34,Female,Personal,Digital Bargain Hunters,112.51
+CUST0013,Sabrina Carroll,Retail,Nicoleport,40-49,Female,Personal,Loyalists,1167.47
+CUST0014,Rachel Thomas,Online,New Kelly,18-24,Female,Personal,Digital Bargain Hunters,205.29
+CUST0015,Jason Owens,Modern,Charlesburgh,45-54,Male,Health/Organic,Health-conscious Modern Consumers,780.58
+CUST0016,Peter Davis,Online,Samanthafurt,35-44,Female,Home,Digital Bargain Hunters,147.81
+CUST0017,Kari Gamble,Online,Lake Michaelborough,35-44,Female,Personal,Digital Bargain Hunters,291.34
+CUST0018,Matthew Brown,General,Angiebury,35-44,Female,Gift,Gift Buyers,210.31
+CUST0019,Vicki Kane,General,Jessicachester,45-54,Male,Gift,Gift Buyers,430.31
+CUST0020,Melissa Todd,Online,Murphyton,18-24,Male,Home,Digital Bargain Hunters,203.2
+CUST0021,Kelly Robinson,Retail,Angelaland,50-59,Male,Personal,Loyalists,1275.74
+CUST0022,Christina Welch,Online,Cynthiastad,25-34,Male,Personal,Digital Bargain Hunters,276.36
+CUST0023,Michael Hunt,Online,Scotthaven,25-34,Male,Home,Digital Bargain Hunters,276.9
+CUST0024,Shannon Sanders,Retail,Deborahview,40-49,Female,Home,Loyalists,1316.24
+CUST0025,Kimberly Mays,Retail,Port Bonnieview,50-59,Female,Personal,Loyalists,1490.29
+CUST0026,Kylie Martinez,General,Parksbury,25-34,Female,Gift,Gift Buyers,183.17
+CUST0027,Vincent Cox,Modern,West Steven,25-34,Female,Health/Organic,Health-conscious Modern Consumers,461.99
+CUST0028,Shawn Williams,Online,Fowlerhaven,18-24,Male,Home,Digital Bargain Hunters,344.94
+CUST0029,John Carson MD,Modern,Harperfurt,45-54,Female,Health/Organic,Health-conscious Modern Consumers,707.69
+CUST0030,Keith Castaneda,Retail,Keithborough,50-59,Male,Personal,Loyalists,1327.07
+CUST0031,Daniel Rosales,General,Evanstown,25-34,Male,Gift,Gift Buyers,450.62
+CUST0032,Desiree Ward,Retail,Smithfurt,60+,Male,Home,Loyalists,1015.29
+CUST0033,Tracey Myers,Retail,North Sharichester,40-49,Male,Personal,Loyalists,785.57
+CUST0034,Melissa Williams,Retail,Jessestad,60+,Male,Personal,Loyalists,1049.67
+CUST0035,Jonathan Fischer,Online,Port Tracychester,18-24,Female,Personal,Digital Bargain Hunters,183.45
+CUST0036,Richard Marsh,Retail,North Lonnie,60+,Male,Home,Loyalists,1269.64
+CUST0037,Karen Brown,Modern,Carlafurt,25-34,Male,Health/Organic,Health-conscious Modern Consumers,748.98
+CUST0038,Ruben Griffin,Online,South Walter,18-24,Female,Home,Digital Bargain Hunters,155.11
+CUST0039,Thomas Garcia,Modern,Lake Markland,45-54,Male,Health/Organic,Health-conscious Modern Consumers,713.43
+CUST0040,Jeffrey Howard,Retail,Masonmouth,40-49,Female,Family,Loyalists,1004.29
+CUST0041,Mark Bolton,Online,Jimmystad,25-34,Female,Personal,Digital Bargain Hunters,216.31
+CUST0042,Aaron Wilkins,Modern,Wandaland,45-54,Male,Health/Organic,Health-conscious Modern Consumers,669.48
+CUST0043,Mrs. Donna Smith MD,Retail,Feliciaview,60+,Male,Home,Loyalists,768.79
+CUST0044,Jenny Long,Modern,Jamesshire,35-44,Male,Health/Organic,Health-conscious Modern Consumers,537.45
+CUST0045,Laura Collins,General,Andrewfurt,35-44,Female,Gift,Gift Buyers,520.23
+CUST0046,Lauren Mercado,Modern,Garciastad,35-44,Female,Health/Organic,Health-conscious Modern Consumers,579.72
+CUST0047,James Jennings,Retail,Lake Tina,40-49,Male,Family,Loyalists,560.43
+CUST0048,Jacob Fletcher,Online,West Nicole,25-34,Male,Home,Digital Bargain Hunters,218.93
+CUST0049,Jill Ware,Retail,Port Brandonside,40-49,Male,Personal,Loyalists,1007.05
+CUST0050,Catherine Ortiz,Modern,Barkerton,35-44,Male,Health/Organic,Health-conscious Modern Consumers,770.34
+CUST0051,Christine Taylor,Retail,South Valerie,40-49,Female,Family,Loyalists,994.63
+CUST0052,Victoria Davenport,Online,West William,18-24,Male,Personal,Digital Bargain Hunters,345.28
+CUST0053,Sheri Spencer,Retail,South Sean,60+,Male,Home,Loyalists,829.84
+CUST0054,Gary Ray,General,Butlerfurt,35-44,Male,Gift,Gift Buyers,177.97
+CUST0055,Kenneth Ellis,Retail,West Jason,40-49,Male,Family,Loyalists,747.28
+CUST0056,Ryan Erickson,Modern,South Christopher,25-34,Male,Health/Organic,Health-conscious Modern Consumers,489.52
+CUST0057,Thomas Moon,Online,Justinmouth,25-34,Male,Home,Digital Bargain Hunters,357.33
+CUST0058,Leslie Baker,Online,West Christine,25-34,Female,Personal,Digital Bargain Hunters,274.55
+CUST0059,Anne Wood,Retail,Brownfurt,40-49,Male,Home,Loyalists,566.53
+CUST0060,Ronald Baker,Retail,Jessicastad,60+,Female,Home,Loyalists,1168.83
+CUST0061,Nicholas Cooper,Online,North Sandra,25-34,Female,Home,Digital Bargain Hunters,153.86
+CUST0062,Lisa Johnson,Online,Wilsonfort,35-44,Male,Personal,Digital Bargain Hunters,177.5
+CUST0063,Kristina Leonard,General,Roymouth,45-54,Female,Gift,Gift Buyers,291.2
+CUST0064,Michael Fowler,Retail,Owensstad,60+,Male,Personal,Loyalists,940.8
+CUST0065,Eileen Phillips,Online,Thomaschester,25-34,Male,Home,Digital Bargain Hunters,129.02
+CUST0066,Evelyn Martin,Retail,Kellyland,50-59,Female,Home,Loyalists,542.03
+CUST0067,Christopher Mosley,Retail,West Mary,60+,Female,Personal,Loyalists,1458.71
+CUST0068,Joseph Stephens,Online,West John,35-44,Male,Home,Digital Bargain Hunters,101.62
+CUST0069,Jennifer Boyd,General,Lake Kyle,25-34,Female,Gift,Gift Buyers,310.48
+CUST0070,James Long,Modern,South Stephanie,25-34,Female,Health/Organic,Health-conscious Modern Consumers,718.7
+CUST0071,Angela Vasquez,Retail,North Jessica,40-49,Female,Family,Loyalists,1163.16
+CUST0072,Danielle Brewer,Retail,Christianport,40-49,Female,Personal,Loyalists,538.32
+CUST0073,Mike Smith,General,New Thomasland,45-54,Female,Gift,Gift Buyers,431.38
+CUST0074,John Noble,Online,Johnsonfurt,18-24,Male,Home,Digital Bargain Hunters,148.69
+CUST0075,Chad Brewer,Retail,Larryville,60+,Male,Home,Loyalists,1254.91
+CUST0076,Adam Branch DDS,Online,Kellyside,25-34,Female,Personal,Digital Bargain Hunters,373.76
+CUST0077,Morgan Mckenzie,Online,New Matthewstad,35-44,Female,Personal,Digital Bargain Hunters,392.98
+CUST0078,Charles Reilly,Retail,Gomezmouth,40-49,Male,Personal,Loyalists,798.45
+CUST0079,Robin Wu,Online,Lake Nancyberg,25-34,Male,Personal,Digital Bargain Hunters,197.77
+CUST0080,Mark Thompson,Retail,Hortonland,40-49,Female,Family,Loyalists,1065.22
+CUST0081,Gregory Delacruz,Modern,Woodwardbury,25-34,Male,Health/Organic,Health-conscious Modern Consumers,796.91
+CUST0082,Amanda Evans,Online,Lake Garyview,35-44,Male,Home,Digital Bargain Hunters,286.49
+CUST0083,Mary Vasquez,Online,Elizabethmouth,18-24,Female,Personal,Digital Bargain Hunters,272.3
+CUST0084,Deborah Aguilar,Retail,New Brandon,60+,Female,Home,Loyalists,635.07
+CUST0085,Nathan Martin,General,Lake Jefferymouth,25-34,Male,Gift,Gift Buyers,246.69
+CUST0086,Samantha Smith,Online,Rickyland,25-34,Female,Home,Digital Bargain Hunters,118.36
+CUST0087,George Green,Online,New Molly,25-34,Male,Personal,Digital Bargain Hunters,137.26
+CUST0088,Sarah Burgess,Online,Davidberg,18-24,Female,Personal,Digital Bargain Hunters,104.42
+CUST0089,Brian Torres,Retail,New William,50-59,Female,Home,Loyalists,1283.87
+CUST0090,Kimberly Williams,Modern,South Markport,45-54,Female,Health/Organic,Health-conscious Modern Consumers,787.12
+CUST0091,Lisa Pittman,Online,Starkville,35-44,Male,Home,Digital Bargain Hunters,288.5
+CUST0092,Jacob Huber,Modern,Lake Patricia,35-44,Female,Health/Organic,Health-conscious Modern Consumers,388.21
+CUST0093,Michael Jackson,Online,Lutzberg,18-24,Male,Home,Digital Bargain Hunters,326.0
+CUST0094,Christopher Lambert,General,South Taylor,25-34,Male,Gift,Gift Buyers,550.73
+CUST0095,Lisa Trujillo,Modern,Danielfurt,35-44,Male,Health/Organic,Health-conscious Modern Consumers,688.03
+CUST0096,Dr. Robert Aguilar,Modern,Markfort,25-34,Male,Health/Organic,Health-conscious Modern Consumers,676.96
+CUST0097,Scott Bryan,Online,West Garyfurt,18-24,Female,Personal,Digital Bargain Hunters,241.58
+CUST0098,Bailey Proctor,Retail,South Brian,40-49,Female,Family,Loyalists,1027.51
+CUST0099,Julie Green,General,Moorechester,45-54,Female,Gift,Gift Buyers,361.81
+CUST0100,Megan Anderson,Retail,Port Mark,50-59,Female,Personal,Loyalists,678.37
+CUST0101,Wanda Turner,Retail,Galvanfurt,50-59,Male,Personal,Loyalists,1478.01
+CUST0102,Cathy Mathews,Retail,Wilsonville,40-49,Female,Family,Loyalists,1009.26
+CUST0103,Seth Welch,Online,New Kathryn,18-24,Male,Home,Digital Bargain Hunters,101.98
+CUST0104,Eric George,Retail,Obrienmouth,40-49,Female,Personal,Loyalists,1177.41
+CUST0105,Charles Chase,Online,North Mary,35-44,Female,Home,Digital Bargain Hunters,239.62
+CUST0106,Stacy Flores,Online,Allenbury,25-34,Female,Home,Digital Bargain Hunters,158.96
+CUST0107,Stephen Alvarez,Online,Port Jonathanmouth,25-34,Male,Home,Digital Bargain Hunters,183.03
+CUST0108,Jacob Knight,Online,East Meganberg,35-44,Male,Home,Digital Bargain Hunters,182.53
+CUST0109,David Kelley,General,Beckerland,45-54,Male,Gift,Gift Buyers,247.27
+CUST0110,Cindy Love,Retail,East Lisatown,50-59,Female,Personal,Loyalists,591.16
+CUST0111,Joel Adams,Retail,Adriennebury,50-59,Male,Family,Loyalists,661.07
+CUST0112,Chris Boyle,Retail,Timothyland,50-59,Male,Family,Loyalists,875.54
+CUST0113,Joseph Walker,Online,West Maria,18-24,Female,Personal,Digital Bargain Hunters,155.95
+CUST0114,Linda Davis,Online,Seanside,35-44,Female,Home,Digital Bargain Hunters,218.11
+CUST0115,Samantha Hampton,Online,East Megan,25-34,Female,Home,Digital Bargain Hunters,276.78
+CUST0116,Billy Shea,Retail,North Lauraport,50-59,Female,Personal,Loyalists,721.5
+CUST0117,Nicole Smith,General,New Timothy,45-54,Male,Gift,Gift Buyers,197.22
+CUST0118,Cameron Franklin,General,Derrickberg,45-54,Male,Gift,Gift Buyers,592.75
+CUST0119,Joseph Jensen,Retail,South Tony,40-49,Male,Personal,Loyalists,1151.75
+CUST0120,Traci Duke,Online,Johnsonland,18-24,Male,Home,Digital Bargain Hunters,201.01
+CUST0121,Steve Bridges,Retail,Zacharyfurt,60+,Male,Personal,Loyalists,1310.65
+CUST0122,Michael White,Retail,Hendersonville,40-49,Male,Family,Loyalists,1454.91
+CUST0123,Brooke Stanley,Modern,New Jacobville,35-44,Female,Health/Organic,Health-conscious Modern Consumers,569.1
+CUST0124,Nicole Randall,Retail,Kirstenville,40-49,Male,Family,Loyalists,1077.61
+CUST0125,Thomas Anderson,Online,East Cassandramouth,35-44,Male,Home,Digital Bargain Hunters,368.89
+CUST0126,Douglas Hicks,Online,Pittmanmouth,25-34,Male,Home,Digital Bargain Hunters,179.75
+CUST0127,Melinda Church,Modern,Lisamouth,25-34,Female,Health/Organic,Health-conscious Modern Consumers,758.28
+CUST0128,Jonathan Peters,Online,Port Glenn,25-34,Male,Personal,Digital Bargain Hunters,288.98
+CUST0129,Nancy Dunn,Online,North Daniel,35-44,Male,Home,Digital Bargain Hunters,293.89
+CUST0130,Abigail Small,Retail,Haasburgh,40-49,Female,Family,Loyalists,997.51
+CUST0131,John Stanley,Modern,Smithbury,35-44,Female,Health/Organic,Health-conscious Modern Consumers,639.46
+CUST0132,Danielle Lawson,Modern,Moralesville,45-54,Female,Health/Organic,Health-conscious Modern Consumers,365.19
+CUST0133,Jennifer Meadows,Online,West Diana,35-44,Female,Home,Digital Bargain Hunters,337.43
+CUST0134,Mariah Perez,Online,North Kennethport,25-34,Female,Home,Digital Bargain Hunters,349.65
+CUST0135,Devin Cunningham,Retail,Leachside,50-59,Female,Personal,Loyalists,768.17
+CUST0136,Curtis Rodriguez,Modern,South Markfurt,45-54,Female,Health/Organic,Health-conscious Modern Consumers,427.54
+CUST0137,Angela Sims,Online,New Kaitlyn,18-24,Female,Home,Digital Bargain Hunters,342.09
+CUST0138,Meredith Flores,Online,South Dennis,18-24,Male,Home,Digital Bargain Hunters,137.72
+CUST0139,Stephanie Luna,Modern,North Sara,35-44,Female,Health/Organic,Health-conscious Modern Consumers,767.01
+CUST0140,Christine Hansen,Online,Lake Sarah,18-24,Female,Personal,Digital Bargain Hunters,110.33
+CUST0141,Mrs. Melissa Woods,General,Mcconnellburgh,35-44,Female,Gift,Gift Buyers,387.1
+CUST0142,Keith Leach,Modern,Carlmouth,45-54,Female,Health/Organic,Health-conscious Modern Consumers,644.24
+CUST0143,Mike Williams,Retail,Shawmouth,40-49,Male,Personal,Loyalists,615.52
+CUST0144,Megan Johnson,Retail,Watersview,60+,Male,Home,Loyalists,1056.55
+CUST0145,Monique Campbell,Retail,Jenkinstown,50-59,Male,Home,Loyalists,680.08
+CUST0146,Sheryl Brewer,General,Harryside,45-54,Female,Gift,Gift Buyers,410.64
+CUST0147,Leonard Brown,General,Virginiafurt,45-54,Female,Gift,Gift Buyers,157.53
+CUST0148,Kelly Jones,Online,South Ericborough,35-44,Male,Home,Digital Bargain Hunters,341.14
+CUST0149,Ryan Morton,Retail,Ochoaberg,50-59,Female,Personal,Loyalists,1398.15
+CUST0150,Sarah Owens,General,East Amandaland,45-54,Female,Gift,Gift Buyers,298.08
+CUST0151,Carlos Monroe,Retail,South Albert,50-59,Male,Personal,Loyalists,1218.19
+CUST0152,Brian Morrison,Online,Nathanieltown,35-44,Female,Home,Digital Bargain Hunters,351.79
+CUST0153,Leah Alvarez,General,West Sarahmouth,45-54,Male,Gift,Gift Buyers,381.88
+CUST0154,Jessica Williams,Online,Port Kelsey,18-24,Male,Home,Digital Bargain Hunters,345.81
+CUST0155,Kevin Davidson,Retail,Alexborough,40-49,Male,Personal,Loyalists,724.9
+CUST0156,Madison Johnson,General,Lindamouth,25-34,Male,Gift,Gift Buyers,377.21
+CUST0157,William Guzman,Retail,Jeremyburgh,50-59,Male,Family,Loyalists,967.96
+CUST0158,Michael Garner,Modern,North Mackenzietown,25-34,Female,Health/Organic,Health-conscious Modern Consumers,609.3
+CUST0159,Steven Melton,Online,Port Sarah,18-24,Male,Personal,Digital Bargain Hunters,325.8
+CUST0160,Marcus Chapman,Retail,Taylorport,60+,Male,Home,Loyalists,1279.3
+CUST0161,Sandra Robinson,General,North Lawrenceton,25-34,Male,Gift,Gift Buyers,441.62
+CUST0162,Timothy Wheeler,Online,North Jessica,25-34,Male,Personal,Digital Bargain Hunters,273.33
+CUST0163,Carolyn Bautista,Online,Mathisburgh,25-34,Male,Personal,Digital Bargain Hunters,259.23
+CUST0164,Victoria Nelson,General,New Angelica,25-34,Male,Gift,Gift Buyers,203.36
+CUST0165,Kevin Jones,Retail,Lewistown,50-59,Male,Home,Loyalists,776.16
+CUST0166,Ashley Preston,Modern,Henryport,45-54,Female,Health/Organic,Health-conscious Modern Consumers,615.83
+CUST0167,Yvette Lopez,Retail,Michaelstad,40-49,Female,Home,Loyalists,983.8
+CUST0168,Nathaniel Buck,Modern,West Laura,25-34,Female,Health/Organic,Health-conscious Modern Consumers,359.86
+CUST0169,Amanda Hamilton,Retail,Smithside,50-59,Female,Family,Loyalists,1177.33
+CUST0170,Michael Nguyen,Online,Patrickton,18-24,Male,Home,Digital Bargain Hunters,336.03
+CUST0171,William Rojas,General,Jennaburgh,25-34,Male,Gift,Gift Buyers,488.88
+CUST0172,Jennifer Anderson,Modern,Mathewsburgh,25-34,Male,Health/Organic,Health-conscious Modern Consumers,450.94
+CUST0173,Andrew Williams,Online,Elainehaven,18-24,Female,Home,Digital Bargain Hunters,393.56
+CUST0174,Douglas Sanchez,Modern,East Robertton,35-44,Male,Health/Organic,Health-conscious Modern Consumers,768.8
+CUST0175,April Irwin,General,Duffyfort,45-54,Female,Gift,Gift Buyers,228.3
+CUST0176,Daniel Ramos,Retail,Sandramouth,60+,Male,Family,Loyalists,764.8
+CUST0177,Rebecca Riley,Online,Port Rita,18-24,Female,Home,Digital Bargain Hunters,117.98
+CUST0178,Alexander Russell,Retail,West Dennisland,40-49,Female,Family,Loyalists,1328.24
+CUST0179,Brian Rodriguez,Online,East Glennville,25-34,Female,Personal,Digital Bargain Hunters,219.71
+CUST0180,Arthur Anderson,General,Lake Danielchester,25-34,Male,Gift,Gift Buyers,417.68
+CUST0181,Christopher Lee,Online,Mejiaside,35-44,Female,Home,Digital Bargain Hunters,217.34
+CUST0182,Matthew Neal,Retail,Lake Greg,60+,Female,Family,Loyalists,809.58
+CUST0183,Andrea James,Retail,Garciamouth,40-49,Male,Personal,Loyalists,1440.94
+CUST0184,Bradley Pham,Modern,Wandaport,25-34,Male,Health/Organic,Health-conscious Modern Consumers,762.44
+CUST0185,Todd Rodriguez,Modern,Caseport,25-34,Female,Health/Organic,Health-conscious Modern Consumers,766.87
+CUST0186,Stephen Adams,General,Port Angela,25-34,Female,Gift,Gift Buyers,285.8
+CUST0187,Sergio Chavez,Online,Cruzbury,25-34,Male,Personal,Digital Bargain Hunters,293.73
+CUST0188,Connor Sheppard,Modern,Jonmouth,25-34,Male,Health/Organic,Health-conscious Modern Consumers,710.47
+CUST0189,Craig Hart Jr.,Retail,East Pamela,40-49,Male,Family,Loyalists,738.37
+CUST0190,Jesse Yoder,Retail,New Jacob,40-49,Male,Family,Loyalists,849.47
+CUST0191,Jeffery Lambert,Retail,Friedmanfort,40-49,Male,Personal,Loyalists,1328.32
+CUST0192,Joseph Reese,Retail,Port Kristenside,60+,Female,Family,Loyalists,598.43
+CUST0193,Leah Johnson,General,Williamsberg,45-54,Female,Gift,Gift Buyers,469.03
+CUST0194,Tracy Heath,Online,West Adam,18-24,Male,Personal,Digital Bargain Hunters,309.84
+CUST0195,Dalton Matthews PhD,Retail,South Cassandra,40-49,Female,Personal,Loyalists,580.66
+CUST0196,Lori Johnston,Retail,North Thomasmouth,50-59,Female,Home,Loyalists,792.42
+CUST0197,David Norris,Modern,Port Joel,35-44,Male,Health/Organic,Health-conscious Modern Consumers,694.75
+CUST0198,Mr. Adam Fox,Modern,South Mary,35-44,Female,Health/Organic,Health-conscious Modern Consumers,724.44
+CUST0199,Kyle Carter,Online,East Nicholasshire,18-24,Female,Personal,Digital Bargain Hunters,305.43
+CUST0200,Christie Ramsey,Online,Bettyport,25-34,Male,Home,Digital Bargain Hunters,244.21
+CUST0201,Melissa Guerrero,General,Pattersonburgh,45-54,Female,Gift,Gift Buyers,388.54
+CUST0202,Sheryl Rodriguez,General,New Steven,25-34,Male,Gift,Gift Buyers,552.18
+CUST0203,Hannah Miller,Online,North Valerie,25-34,Female,Personal,Digital Bargain Hunters,203.86
+CUST0204,Carlos Mason,Modern,Christinefurt,25-34,Male,Health/Organic,Health-conscious Modern Consumers,648.81
+CUST0205,Joseph Franklin,Retail,Perezbury,60+,Male,Personal,Loyalists,1088.05
+CUST0206,Kimberly Taylor,Online,South Mark,25-34,Female,Personal,Digital Bargain Hunters,235.83
+CUST0207,Ethan Ross,Online,Jillberg,18-24,Female,Home,Digital Bargain Hunters,392.92
+CUST0208,Regina Doyle,Online,Port Leslie,25-34,Male,Personal,Digital Bargain Hunters,339.9
+CUST0209,James Zavala,Modern,Melissaview,45-54,Female,Health/Organic,Health-conscious Modern Consumers,546.25
+CUST0210,Amber Hart,Online,Lake Christinemouth,35-44,Female,Home,Digital Bargain Hunters,207.86
+CUST0211,Tiffany Williams,Retail,Washingtonstad,50-59,Male,Personal,Loyalists,1026.53
+CUST0212,Sean Dunlap,Retail,South Josephberg,40-49,Male,Family,Loyalists,694.63
+CUST0213,Roberta Morris,General,Port Travis,45-54,Female,Gift,Gift Buyers,349.62
+CUST0214,Sabrina Ford,Retail,Beasleymouth,40-49,Male,Family,Loyalists,1112.55
+CUST0215,Isaac Brown,Online,Amytown,25-34,Female,Home,Digital Bargain Hunters,134.84
+CUST0216,Alex Jones,Online,Lynnfort,25-34,Female,Personal,Digital Bargain Hunters,117.1
+CUST0217,Rhonda Cox,Online,New Jameston,35-44,Female,Personal,Digital Bargain Hunters,110.37
+CUST0218,James Simpson,Online,Lake Nataliefurt,18-24,Male,Personal,Digital Bargain Hunters,302.75
+CUST0219,Erin Curtis,Retail,Lake Brookebury,60+,Female,Home,Loyalists,1281.7
+CUST0220,Kevin Boyer,Online,Miguelchester,35-44,Male,Personal,Digital Bargain Hunters,244.93

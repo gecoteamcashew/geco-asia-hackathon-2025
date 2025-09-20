@@ -1,0 +1,99 @@
+SKU,Product_Name,Category,Flavour,Pack_Size_g,Pack_Type,List_Price_SGD,Status
+SKU0001,Natural Baked Almonds 36g,Almonds,Natural Baked,36,Mini Pack,5.67,Active
+SKU0002,Natural Baked Almonds 135g,Almonds,Natural Baked,135,Pouch,7.5,Active
+SKU0003,Natural Baked Almonds 400g,Almonds,Natural Baked,400,Pouch,12.41,Active
+SKU0004,Natural Baked Almonds 1kg,Almonds,Natural Baked,1000,Bulk,23.52,Active
+SKU0005,Smoked Almonds 36g,Almonds,Smoked,36,Mini Pack,5.67,Active
+SKU0006,Smoked Almonds 135g,Almonds,Smoked,135,Pouch,7.5,Active
+SKU0007,Smoked Almonds 400g,Almonds,Smoked,400,Pouch,12.41,Active
+SKU0008,Smoked Almonds 1kg,Almonds,Smoked,1000,Bulk,23.52,Active
+SKU0009,Honey Almonds 36g,Almonds,Honey,36,Mini Pack,5.67,Active
+SKU0010,Honey Almonds 135g,Almonds,Honey,135,Pouch,7.5,Active
+SKU0011,Honey Almonds 400g,Almonds,Honey,400,Pouch,12.41,Active
+SKU0012,Honey Almonds 1kg,Almonds,Honey,1000,Bulk,23.52,Active
+SKU0013,Raw Almonds 36g,Almonds,Raw,36,Mini Pack,5.67,Active
+SKU0014,Raw Almonds 135g,Almonds,Raw,135,Pouch,7.5,Active
+SKU0015,Raw Almonds 400g,Almonds,Raw,400,Pouch,12.41,Active
+SKU0016,Raw Almonds 1kg,Almonds,Raw,1000,Bulk,23.52,Active
+SKU0017,Roasted Cashews 36g,Cashews,Roasted,36,Mini Pack,5.67,Active
+SKU0018,Roasted Cashews 135g,Cashews,Roasted,135,Pouch,7.5,Active
+SKU0019,Roasted Cashews 400g,Cashews,Roasted,400,Pouch,12.41,Active
+SKU0020,Roasted Cashews 1kg,Cashews,Roasted,1000,Bulk,23.52,Active
+SKU0021,Honey Cashews 36g,Cashews,Honey,36,Mini Pack,5.67,Active
+SKU0022,Honey Cashews 135g,Cashews,Honey,135,Pouch,7.5,Active
+SKU0023,Honey Cashews 400g,Cashews,Honey,400,Pouch,12.41,Active
+SKU0024,Honey Cashews 1kg,Cashews,Honey,1000,Bulk,23.52,Active
+SKU0025,Satay Cashews 36g,Cashews,Satay,36,Mini Pack,5.67,Active
+SKU0026,Satay Cashews 135g,Cashews,Satay,135,Pouch,7.5,Active
+SKU0027,Satay Cashews 400g,Cashews,Satay,400,Pouch,12.41,Active
+SKU0028,Satay Cashews 1kg,Cashews,Satay,1000,Bulk,23.52,Active
+SKU0029,Natural Baked Cashews 36g,Cashews,Natural Baked,36,Mini Pack,5.67,Active
+SKU0030,Natural Baked Cashews 135g,Cashews,Natural Baked,135,Pouch,7.5,Active
+SKU0031,Natural Baked Cashews 400g,Cashews,Natural Baked,400,Pouch,12.41,Active
+SKU0032,Natural Baked Cashews 1kg,Cashews,Natural Baked,1000,Bulk,23.52,Active
+SKU0033,Baked Pistachios 36g,Pistachios,Baked,36,Mini Pack,5.67,Active
+SKU0034,Baked Pistachios 135g,Pistachios,Baked,135,Pouch,7.5,Active
+SKU0035,Baked Pistachios 400g,Pistachios,Baked,400,Pouch,12.41,Active
+SKU0036,Baked Pistachios 1kg,Pistachios,Baked,1000,Bulk,23.52,Active
+SKU0037,Salted Pistachios 36g,Pistachios,Salted,36,Mini Pack,5.67,Active
+SKU0038,Salted Pistachios 135g,Pistachios,Salted,135,Pouch,7.5,Active
+SKU0039,Salted Pistachios 400g,Pistachios,Salted,400,Pouch,12.41,Active
+SKU0040,Salted Pistachios 1kg,Pistachios,Salted,1000,Bulk,23.52,Active
+SKU0041,Roasted Peanuts 135g,Peanuts,Roasted,135,Pouch,2.5,Active
+SKU0042,Roasted Peanuts 400g,Peanuts,Roasted,400,Pouch,4.46,Active
+SKU0043,Roasted Peanuts 1kg,Peanuts,Roasted,1000,Bulk,8.91,Active
+SKU0044,Sugar Peanuts 135g,Peanuts,Sugar,135,Pouch,2.5,Active
+SKU0045,Sugar Peanuts 400g,Peanuts,Sugar,400,Pouch,4.46,Active
+SKU0046,Sugar Peanuts 1kg,Peanuts,Sugar,1000,Bulk,8.91,Active
+SKU0047,Cracker Peanuts 135g,Peanuts,Cracker,135,Pouch,2.5,Active
+SKU0048,Cracker Peanuts 400g,Peanuts,Cracker,400,Pouch,4.46,Active
+SKU0049,Cracker Peanuts 1kg,Peanuts,Cracker,1000,Bulk,8.91,Active
+SKU0050,Anchovies Peanuts 135g,Peanuts,Anchovies,135,Pouch,2.5,Active
+SKU0051,Anchovies Peanuts 400g,Peanuts,Anchovies,400,Pouch,4.46,Active
+SKU0052,Anchovies Peanuts 1kg,Peanuts,Anchovies,1000,Bulk,8.91,Active
+SKU0053,Shandong Peanuts 135g,Peanuts,Shandong,135,Pouch,2.5,Active
+SKU0054,Shandong Peanuts 400g,Peanuts,Shandong,400,Pouch,4.46,Active
+SKU0055,Shandong Peanuts 1kg,Peanuts,Shandong,1000,Bulk,8.91,Active
+SKU0056,Garlic Shandong Peanuts 135g,Peanuts,Garlic Shandong,135,Pouch,2.5,Active
+SKU0057,Garlic Shandong Peanuts 400g,Peanuts,Garlic Shandong,400,Pouch,4.46,Active
+SKU0058,Garlic Shandong Peanuts 1kg,Peanuts,Garlic Shandong,1000,Bulk,8.91,Active
+SKU0059,Fancy Mix Mixed Nuts 135g,Mixed Nuts,Fancy Mix,135,Pouch,7.5,Active
+SKU0060,Fancy Mix Mixed Nuts 400g,Mixed Nuts,Fancy Mix,400,Pouch,12.41,Active
+SKU0061,Fancy Mix Mixed Nuts 1kg,Mixed Nuts,Fancy Mix,1000,Bulk,23.52,Active
+SKU0062,Cocktail Mix Mixed Nuts 135g,Mixed Nuts,Cocktail Mix,135,Pouch,7.5,Active
+SKU0063,Cocktail Mix Mixed Nuts 400g,Mixed Nuts,Cocktail Mix,400,Pouch,12.41,Active
+SKU0064,Cocktail Mix Mixed Nuts 1kg,Mixed Nuts,Cocktail Mix,1000,Bulk,23.52,Active
+SKU0065,Berries Delight Mixed Nuts 135g,Mixed Nuts,Berries Delight,135,Pouch,7.5,Active
+SKU0066,Berries Delight Mixed Nuts 400g,Mixed Nuts,Berries Delight,400,Pouch,12.41,Active
+SKU0067,Berries Delight Mixed Nuts 1kg,Mixed Nuts,Berries Delight,1000,Bulk,23.52,Active
+SKU0068,Ruby Mix Mixed Nuts 135g,Mixed Nuts,Ruby Mix,135,Pouch,7.5,Active
+SKU0069,Ruby Mix Mixed Nuts 400g,Mixed Nuts,Ruby Mix,400,Pouch,12.41,Active
+SKU0070,Ruby Mix Mixed Nuts 1kg,Mixed Nuts,Ruby Mix,1000,Bulk,23.52,Active
+SKU0071,Festive Mixed Nuts 135g,Mixed Nuts,Festive,135,Pouch,7.5,Active
+SKU0072,Festive Mixed Nuts 400g,Mixed Nuts,Festive,400,Pouch,12.41,Active
+SKU0073,Festive Mixed Nuts 1kg,Mixed Nuts,Festive,1000,Bulk,23.52,Active
+SKU0074,Almond Butter Nut Butter 200g,Nut Butter,Almond Butter,200,Pouch,10.0,Active
+SKU0075,Almond Butter Nut Butter 350g,Nut Butter,Almond Butter,350,Pouch,11.5,Active
+SKU0076,Almond Butter Nut Butter 500g,Nut Butter,Almond Butter,500,Pouch,13.0,Active
+SKU0077,Cashew Butter Nut Butter 200g,Nut Butter,Cashew Butter,200,Pouch,10.0,Active
+SKU0078,Cashew Butter Nut Butter 350g,Nut Butter,Cashew Butter,350,Pouch,11.5,Active
+SKU0079,Cashew Butter Nut Butter 500g,Nut Butter,Cashew Butter,500,Pouch,13.0,Active
+SKU0080,Walnut Butter Nut Butter 200g,Nut Butter,Walnut Butter,200,Pouch,10.0,Active
+SKU0081,Walnut Butter Nut Butter 350g,Nut Butter,Walnut Butter,350,Pouch,11.5,Active
+SKU0082,Walnut Butter Nut Butter 500g,Nut Butter,Walnut Butter,500,Pouch,13.0,Active
+SKU0083,Cranberries Dried Fruits & Berries 200g,Dried Fruits & Berries,Cranberries,200,Pouch,5.5,Active
+SKU0084,Cranberries Dried Fruits & Berries 400g,Dried Fruits & Berries,Cranberries,400,Pouch,7.0,Active
+SKU0085,Mango Dried Fruits & Berries 200g,Dried Fruits & Berries,Mango,200,Pouch,5.5,Active
+SKU0086,Mango Dried Fruits & Berries 400g,Dried Fruits & Berries,Mango,400,Pouch,7.0,Active
+SKU0087,Blueberries Dried Fruits & Berries 200g,Dried Fruits & Berries,Blueberries,200,Pouch,5.5,Active
+SKU0088,Blueberries Dried Fruits & Berries 400g,Dried Fruits & Berries,Blueberries,400,Pouch,7.0,Active
+SKU0089,Raisins Dried Fruits & Berries 200g,Dried Fruits & Berries,Raisins,200,Pouch,5.5,Active
+SKU0090,Raisins Dried Fruits & Berries 400g,Dried Fruits & Berries,Raisins,400,Pouch,7.0,Active
+SKU0091,"Wasabi Peas Beans, Grams & Peas 135g","Beans, Grams & Peas",Wasabi Peas,135,Pouch,3.2,Active
+SKU0092,"Wasabi Peas Beans, Grams & Peas 400g","Beans, Grams & Peas",Wasabi Peas,400,Pouch,5.56,Active
+SKU0093,"Broad Beans Beans, Grams & Peas 135g","Beans, Grams & Peas",Broad Beans,135,Pouch,3.2,Active
+SKU0094,"Broad Beans Beans, Grams & Peas 400g","Beans, Grams & Peas",Broad Beans,400,Pouch,5.56,Active
+SKU0095,"Chickpeas Beans, Grams & Peas 135g","Beans, Grams & Peas",Chickpeas,135,Pouch,3.2,Active
+SKU0096,"Chickpeas Beans, Grams & Peas 400g","Beans, Grams & Peas",Chickpeas,400,Pouch,5.56,Active
+SKU0097,"Edamame Beans, Grams & Peas 135g","Beans, Grams & Peas",Edamame,135,Pouch,3.2,Active
+SKU0098,"Edamame Beans, Grams & Peas 400g","Beans, Grams & Peas",Edamame,400,Pouch,5.56,Active

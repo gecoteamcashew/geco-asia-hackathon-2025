@@ -1,0 +1,112 @@
+
+nagappan.nagajothi@upskilltoday.com
+
+VM:
+Team C Cashew VM Instance IP address - 157.10.162.219
+username: ubuntu
+password: password
+
+User: teamgecocashew@protonmail.com
+Pw: Passwordcashew1!
+
+Gmail (for signing up services and stuff): 
+gecoteamcashew@gmail.com
+Pw: Passwordcashew1!
+
+github:
+user: gecoteamcashew@gmail.com
+pw: Passwordcashew1!
+**********************************************
+ app requiements
+**********************************************
+# Install venv if not installed
+sudo apt-get update
+sudo apt-get install python3-venv -y
+
+# Create virtual environment
+python3 -m venv hackathon_env
+
+# Activate environment (Linux/WSL syntax)
+source hackathon_env/bin/activate
+
+# Install required packages
+pip install pandas numpy streamlit plotly sqlalchemy openpyxl
+
+# Activate environment
+source hackathon_env/bin/activate
+
+#After activation, run:
+which python
+
+#Test
+python -c 'import pandas, streamlit, plotly; print("All good!")'
+
+# Activate environment
+source hackathon_env/bin/activate
+
+# Run Streamlit app
+streamlit run app.py
+streamlit run app.py --server.headless true --server.address 0.0.0.0 --server.port 8501
+streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+
+pip install -r requirements.txt
+
+#After saving Run 
+streamlit cache clear
+
+**********************************************
+update WSL and install Firefox 
+**********************************************
+WSL updates from Windows using Ms windwo cli
+wsl --update
+wsl --shutdown
+
+#If your WSL distro supports GUI apps (Ubuntu 22.04+ on Windows 11 has this built-in), you can just do:
+sudo apt update
+sudo apt install firefox -y
+firefox http://localhost:8501
+
+**********************************************
+Suppress Auto-Open & Access From Windows
+**********************************************
+
+nano ~/.streamlit/config.toml
+
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+
+[browser]
+serverAddress = "localhost"
+serverPort = 8501
+gatherUsageStats = false
+
+**************************************************************
+
+“Use the file with header # Cashew4Life - Dashboard (Latest Patched Version 0.1a) and …”
+
+
+If you want enable debug 
+DEBUG=1 streamlit run app.py
+Do you also want me to add a debug mode flag (like DEBUG_NLQ=1 env var) so you can quickly see how many rows survive each filter when you’re testing queries?
+DEBUG=1 streamlit run app.py
+
+Business inteligence dashboad 
+
+1. Table name  details  2. NQL give story  3. NLQ shopify
+2. First page   item , quantiy , year, 
+3. Cashew as a name perhaps? revenues $50k-$100k per month; each campaign is $600 to $1,200
+$600-$1,200 monthly spend; online sales is less than 5% overall revenue
+
+4. Black background 
+5. NLQ top five product sales  bring some other table at bottom ?
+
+
+Limit Order
+Stop Limit Order
+Trailing Stop Limit 
+Attached Orders
+Conditional Order 
+OCA (One Cancels All) / OCO (One Cancels the Other)
