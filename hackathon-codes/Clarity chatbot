@@ -52,6 +52,15 @@ DATA_DIR = Path(os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data"))
 PORT     = int(os.getenv("CLARITY_PORT", os.getenv("PORT", "5002")))
 
 ASSISTANT_NAME = "Clarity"
+COMPANY_NAME   = "Cashew4Nuts"
+
+# -----------------------------
+# Brand sanitizer (mask any Camel Nuts mention)
+# -----------------------------
+def brand_sanitize(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+    return re.sub(r"camel[\s\u00A0\-]*nuts[’'s]*", COMPANY_NAME, s, flags=re.I)
 
 # -----------------------------
 # Data Manager (dynamic CSV loader)
@@ -151,16 +160,40 @@ class StaffAnalytics:
         self.dm = dm
 
     def _load_sales_df(self) -> Optional[pd.DataFrame]:
-        # Prefer sales_transactions, else ecommerce_purchases
+        # Prefer canonical names
         df = self.dm.get_table_like("sales_transactions")
         if df is None or df.empty:
             df = self.dm.get_table_like("ecommerce_purchases")
-        return df
+        if df is not None and not df.empty:
+            return df
+
+        # Fallback: pick any table that has BOTH a revenue-ish and product-ish column
+        best_df, best_name, best_len = None, None, 0
+        for name, cand in self.dm.tables.items():
+            if cand is None or cand.empty:
+                continue
+            rev = _find_col(cand, REV_COL_PAT)
+            prod = _find_col(cand, PROD_COL_PAT)
+            if rev and prod and len(cand) > best_len:
+                best_df, best_name, best_len = cand, name, len(cand)
+        if best_df is not None:
+            log.info(f"[auto] Using '{best_name}' as sales source (rev+product detected, rows={best_len})")
+            return best_df
+
+        return None
 
     def sales_summary(self, query: str) -> str:
         df = self._load_sales_df()
         if df is None or df.empty:
-            return "No sales data found."
+            loaded = ", ".join(sorted(self.dm.tables.keys()))
+            return (
+                "No sales data found.\n"
+                f"Loaded tables: {loaded or '(none)'}\n"
+                "Tips: Ensure DATA_DIR points to your CSV folder and that a file like "
+                "'sales_transactions.csv' or 'ecommerce_purchases.csv' exists, OR include "
+                "columns matching revenue (net_sales/gross_sales/amount/revenue/total_amount/...) "
+                "and product (sku_description/product_name/...)."
+            )
 
         rev_col  = _find_col(df, REV_COL_PAT)
         prod_col = _find_col(df, PROD_COL_PAT)
@@ -218,10 +251,16 @@ class StaffAnalytics:
         ql = q.lower()
         if any(k in ql for k in ("sale", "revenue", "gmv", "profit", "margin", "roi", "roas", "forecast", "trend", "top", "bottom")):
             if "profit" in ql or "margin" in ql:
-                # Try profit if possible; else guidance
                 df = self._load_sales_df()
                 if df is None or df.empty:
-                    return "No sales data found."
+                    loaded = ", ".join(sorted(self.dm.tables.keys()))
+                    return (
+                        "No sales data found.\n"
+                        f"Loaded tables: {loaded or '(none)'}\n"
+                        "Tips: Ensure DATA_DIR points to your CSV folder and that a file like "
+                        "'sales_transactions.csv' or 'ecommerce_purchases.csv' exists, OR include "
+                        "columns matching revenue and product."
+                    )
                 note = self.profit_note()
                 if "requires COGS" in note:
                     rev = self.sales_summary(q)
@@ -235,7 +274,7 @@ class StaffAnalytics:
         sku_examples = (skus.head(10).to_dict(orient="records") if isinstance(skus, pd.DataFrame) and not skus.empty else [])
         return call_model([
             {"role":"system","content":(
-                "You are Clarity, a Camel Nuts internal analytics officer. "
+                f"You are Clarity, an internal analytics officer at {COMPANY_NAME}. "
                 "Use the CSV data for analysis when possible. "
                 "If the query is outside the data scope, answer helpfully and concisely."
             )},
@@ -282,12 +321,12 @@ INDEX_HTML_TPL = Template("""
     <div class="widget">
       <div class="header">
         <h1>${BOT}</h1>
-        <p>Ask for sales summaries, top/bottom products, and filters by year or channel (Shopee, Lazada, Shopify, website, offline).</p>
+        <p>Ask for sales summaries, top/bottom products, and filters by year or channel (Shopee, Lazada, Shopify, website, offline) for Cashew4Nuts.</p>
       </div>
       <div id="chat" class="chat">
         <div class="bubble bot">
           <div class="badge">${BOT}</div>
-Hello! I’m ${BOT}. Examples:
+Hello! I’m ${BOT} from Cashew4Nuts. Examples:
 • “Top 5 products by revenue 2024”
 • “Total revenue Shopee 2023”
 • “Bottom 3 by revenue Lazada 2024”
@@ -352,12 +391,18 @@ app = Flask(__name__)
 def index():
     return render_template_string(INDEX_HTML_TPL.safe_substitute(BOT=ASSISTANT_NAME))
 
+@app.get("/health")
+def health():
+    return jsonify({"ok": True, "data_dir": str(DATA_DIR), "tables": sorted(list(dm.tables.keys()))})
+
 @app.route("/chat", methods=["POST"])
 def chat():
     msg = (request.json.get("message") or "").strip()
     if not msg:
-        return jsonify({"reply": "Say something!", "speaker": ASSISTANT_NAME})
-    reply = staff.answer(msg)
+        reply = "Say something!"
+    else:
+        reply = staff.answer(msg)
+    reply = brand_sanitize(reply)
     return jsonify({"reply": reply, "speaker": ASSISTANT_NAME})
 
 if __name__ == "__main__":
