@@ -318,17 +318,23 @@ class Assistant:
 
     # ----- FAQ / Catalogue (local) -----
     def _faq_lookup(self, q: str) -> Optional[str]:
-        faq = self.dm.tables.get("faqs") or self.dm.tables.get("faq")
-        if not isinstance(faq, pd.DataFrame) or faq.empty:
-            return None
-        if not {"question","answer"} <= set(faq.columns):
-            return None
-        best, score = None, 0
-        for _, row in faq.iterrows():
-            s = fuzz.token_set_ratio(str(row["question"]), q)
-            if s > score:
-                best, score = str(row["answer"]), s
-        return best if score >= 75 else None
+    # Get first non-empty FAQ table (faqs.csv or faq.csv)
+    faq = self.dm.tables.get("faqs")
+    if not isinstance(faq, pd.DataFrame) or faq.empty:
+        faq = self.dm.tables.get("faq")
+
+    if not isinstance(faq, pd.DataFrame) or faq.empty:
+        return None
+    if not {"question", "answer"} <= set(faq.columns):
+        return None
+
+    best, score = None, 0
+    for _, row in faq.iterrows():
+        s = fuzz.token_set_ratio(str(row["question"]), q)
+        if s > score:
+            best, score = str(row["answer"]), s
+    return best if score >= 75 else None
+
 
     def _catalog_lookup(self, q: str, limit: int = 10) -> Optional[str]:
         q = (q or "").strip()
