@@ -1,16 +1,22 @@
 # NibblesChat (customer) – Website widget
-# Flask chatbot with API, dynamic CSV ingestion, FAQ & product lookups
-# - Draws from all CSVs for FAQs/products
-# - Politely rejects sensitive business queries (sales/revenue/profit/ROI/etc.)
-# - Gentle orange theme
+# Flask chatbot with API, dynamic CSV ingestion, FAQ, product discovery & price lookups
+# - Primary NLU (intent + entities + language): OpenAI GPT OSS-120B via API_URL
+# - All factual answers (products, prices, ingredients, orders): from CSVs only
+# - Small talk is LLM-powered in the user’s language
+# - Translate-only pass to preserve EXACT product names/prices from data
+# - Uses all CSVs in DATA_DIR (prefers sku_master.sku_description for product names)
+# - Product discovery, price/ingredients/allergens, orders, membership/returns
+# - Multilingual (EA/SEA heuristics + LLM language field)
+# - Politely refuses internal analytics (sales/revenue/ROI/etc.)
+# - Gentle orange theme, SKUs shown only if user asks (mentions “SKU” or “code”)
 # - Env: API_URL, API_KEY, MODEL, DATA_DIR, NIBBLES_PORT (optional), PORT (fallback)
 # - Default port if none set: 5001
 
 import os, re, subprocess, sys, logging, json
 from pathlib import Path
 from string import Template
-from typing import Dict, List, Optional
-from dotenv import load_dotenv
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
 
 # -----------------------------
 # Logging
@@ -28,10 +34,8 @@ def ensure_deps():
     missing = []
     for pkg in REQUIRED:
         mod = "Levenshtein" if pkg == "python-levenshtein" else pkg
-        try:
-            importlib.import_module(mod)
-        except ImportError:
-            missing.append(pkg)
+        try: importlib.import_module(mod)
+        except ImportError: missing.append(pkg)
     if missing:
         subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
 ensure_deps()
@@ -40,32 +44,51 @@ import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
 from fuzzywuzzy import fuzz
 import requests
+from dotenv import load_dotenv
 
 # -----------------------------
-# Load env
+# Env + path sanitize
 # -----------------------------
 load_dotenv()
-API_URL  = os.getenv("API_URL", "").strip()
-API_KEY  = os.getenv("API_KEY", "").strip()
-MODEL    = os.getenv("MODEL", "openai/gpt-oss-120b")
-DATA_DIR = Path(os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data"))
+
+def _sanitize_path(p: str) -> str:
+    if not p: return ""
+    p = p.strip().strip('"').strip("'")
+    p = os.path.expandvars(p)
+    p = os.path.expanduser(p)
+    return p
+
+API_URL  = (os.getenv("API_URL") or "").strip()
+API_KEY  = (os.getenv("API_KEY") or "").strip()
+MODEL    = (os.getenv("MODEL") or "openai/gpt-oss-120b").strip()
+_raw_dir = os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data")
+DATA_DIR = Path(_sanitize_path(_raw_dir))
 PORT     = int(os.getenv("NIBBLES_PORT", os.getenv("PORT", "5001")))
 
 ASSISTANT_NAME = "Nibbles"
 COMPANY_NAME   = "Cashew4Nuts"
 
-# -----------------------------
-# Brand sanitizer (mask any Camel Nuts mention)
-# -----------------------------
-def brand_sanitize(s: str) -> str:
-    if not isinstance(s, str):
-        return s
-    # Replace "Camel Nuts" (various spacings/hyphens/quotes) with Cashew4Nuts
-    return re.sub(r"camel[\s\u00A0\-]*nuts[’'s]*", COMPANY_NAME, s, flags=re.I)
+log.info(f"[env] DATA_DIR raw='{_raw_dir}' -> resolved='{DATA_DIR}'  exists={DATA_DIR.exists()}")
 
 # -----------------------------
-# Data Manager (dynamic CSV loader)
+# Brand sanitizer (mask any 'Camel Nuts' mention)
 # -----------------------------
+_CAMEL_RE = re.compile(r"camel[\s\u00A0\-]*nuts[’'s]*", re.I)
+def brand_sanitize(s: str) -> str:
+    if not isinstance(s, str): return s
+    return _CAMEL_RE.sub(COMPANY_NAME, s)
+
+# -----------------------------
+# Data Manager
+# -----------------------------
+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame() if df is None else df
+    df.columns = [str(c).replace("\u00A0"," ").strip().lower() for c in df.columns]
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].astype(str).str.replace("\u00A0"," ", regex=False).str.strip()
+    return df
+
 class DataManager:
     def __init__(self, data_dir: Path):
         self.dir = Path(data_dir)
@@ -73,169 +96,863 @@ class DataManager:
         self._load_all()
 
     def _safe_csv(self, path: Path) -> pd.DataFrame:
-        df = pd.DataFrame()
-        for enc in ("utf-8", "utf-8-sig", "latin-1"):
+        for enc in ("utf-8","utf-8-sig","latin-1"):
             try:
-                df = pd.read_csv(path, encoding=enc)
-                break
+                return _normalize_df(pd.read_csv(path, encoding=enc, low_memory=False))
             except Exception:
                 continue
-        if df.empty:
-            log.warning(f"[csv] Failed to load {path}")
-            return df
-        # cleanup
-        df.columns = [str(c).replace("\u00A0", " ").strip().lower() for c in df.columns]
-        for c in df.columns:
-            if df[c].dtype == object:
-                df[c] = df[c].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
-        return df
+        log.warning(f"[csv] Failed to load {path}")
+        return pd.DataFrame()
 
     def _load_all(self):
         log.info(f"[load] scanning {self.dir} for CSV files…")
         if not self.dir.exists():
             log.error(f"[load] directory not found: {self.dir}")
             return
-        for path in self.dir.rglob("*.csv"):
-            key = path.stem.lower().replace(" ", "_")
-            df = self._safe_csv(path)
+        count = 0
+        for p in self.dir.rglob("*.csv"):
+            key = p.stem.lower().replace(" ", "_")
+            df = self._safe_csv(p)
             self.tables[key] = df
+            count += 1
             log.info(f"[load] {key}: {len(df)} rows, {len(df.columns)} cols")
+        log.info(f"[load] total CSVs loaded: {count}")
 
     def get_table_like(self, key_fragment: str) -> Optional[pd.DataFrame]:
-        """Return the first table whose name contains key_fragment (case-insensitive)."""
-        key_fragment = key_fragment.lower()
+        frag = key_fragment.lower()
         for k, v in self.tables.items():
-            if key_fragment in k:
+            if frag in k and isinstance(v, pd.DataFrame) and not v.empty:
                 return v
         return None
 
-# -----------------------------
-# Model caller (plain text)
-# -----------------------------
-def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
-    if not API_KEY or not API_URL:
-        return "Assistant is temporarily unavailable. Please try again later."
-    try:
-        messages = [{"role": "system", "content":
-                     "Always answer in plain text only. "
-                     "Do not use Markdown, bold, tables, or special formatting."}] + messages
+    def text_columns(self, df: pd.DataFrame) -> List[str]:
+        if df is None or df.empty: return []
+        return [c for c in df.columns if df[c].dtype == object]
 
-        r = requests.post(
-            API_URL,
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={"model": MODEL, "messages": messages, "max_tokens": max_tokens},
-            timeout=20,
-        )
-        reply = r.json()["choices"][0]["message"]["content"].strip()
-        reply = re.sub(r"[*_`#>|]", "", reply)  # strip stray markdown
-        return reply
+# -----------------------------
+# HTTP -> LLM helpers
+# -----------------------------
+def _llm_chat(messages: List[Dict[str,str]], max_tokens=512, expect_json=False) -> str:
+    if not (API_URL and API_KEY):
+        raise RuntimeError("LLM API not configured")
+    payload = {
+        "model": MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens
+    }
+    if expect_json:
+        # If the endpoint accepts it, this nudges JSON-only output; harmless if ignored.
+        payload["response_format"] = {"type": "json_object"}
+    r = requests.post(
+        API_URL,
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=25,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+def _llm_json(messages: List[Dict[str,str]], max_tokens=700) -> Optional[dict]:
+    """Ask the LLM for STRICT JSON. One retry with a stricter reminder."""
+    try:
+        txt = _llm_chat(messages, max_tokens=max_tokens, expect_json=True)
+        return json.loads(txt)
+    except Exception as e1:
+        log.warning(f"[nlu] JSON parse failed once: {e1}")
+        try:
+            strict = messages + [{"role":"system","content":"Reply ONLY with valid JSON matching the schema. No commentary."}]
+            txt = _llm_chat(strict, max_tokens=max_tokens, expect_json=True)
+            return json.loads(txt)
+        except Exception as e2:
+            log.error(f"[nlu] JSON parse failed twice: {e2}")
+            return None
+
+def _llm_plain(messages: List[Dict[str,str]], max_tokens=512) -> str:
+    try:
+        reply = _llm_chat(messages, max_tokens=max_tokens)
+        return re.sub(r"[*_`#>|]", "", (reply or "").strip())
     except Exception as e:
         log.error(f"[api] error: {e}")
-        return "Sorry, I couldn’t connect to the assistant service."
+        return messages[-1].get("content","")
 
 # -----------------------------
-# Sensitive-topic gate (politely refuse)
+# Language detection + translate-only render
 # -----------------------------
+def detect_lang(q: str) -> str:
+    q = q or ""
+    # CJK
+    if re.search(r"[\u4e00-\u9fff]", q): return "zh"
+    if re.search(r"[ぁ-ゟ゠-ヿ]", q) or re.search(r"[一-龯]", q): return "ja"
+    if re.search(r"[가-힣]", q): return "ko"
+    t = q.lower()
+    # SEA quick cues
+    if re.search(r"(gi[áa]|bao nhiêu|giá|thành phần|giao hàng)", t): return "vi"
+    if re.search(r"(harga|berapa|bah[ai]n|pengiriman)", t): return "id"
+    if re.search(r"(berapa|harga|bahan|penghantaran)", t): return "ms"
+    if re.search(r"(ราคา|เท่าไร|เท่าไหร่|ส่วนผสม|จัดส่ง)", t): return "th"
+    if re.search(r"(magkano|presyo|sangkap|kailan|darating)", t): return "tl"
+    return "auto"
+
+def render_reply(base_text: str, user_lang: str = "auto") -> str:
+    """Translate assistant draft ONLY if non-English; preserve exact names/prices."""
+    if not (API_URL and API_KEY) or user_lang in ("auto", "en"):
+        return base_text
+    sysmsg = {
+        "role": "system",
+        "content": (
+            f"You are {ASSISTANT_NAME}, a Customer Service Officer at {COMPANY_NAME}. "
+            "Translate the assistant draft below into the user's language (hint provided). "
+            "STRICT REQUIREMENTS:\n"
+            "- Keep ALL product names, pack sizes, prices, currency codes/symbols EXACTLY as-is.\n"
+            "- Do NOT add, remove, or change any items.\n"
+            "- Return plain text only (no Markdown)."
+        )
+    }
+    return _llm_plain([sysmsg, {"role": "user", "content": f"[LANG={user_lang}]\n{base_text}"}], max_tokens=600)
+
+# -----------------------------
+# Cross-lingual normalization
+# -----------------------------
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]")  # JP/CJK/KR
+
+def normalize_lang_tokens(s: str) -> str:
+    """Map common EA/SEA food terms to English tokens; normalize sizes like 120g."""
+    if not s: return ""
+    t = s.lower()
+    replacements = [
+        (r"(ロースト|焙煎|烤|烘焙|구운|panggang|nướng|อบ|คั่ว)", " roasted "),
+        (r"(蜂蜜|ハニー|허니|mật\s*ong|madu|น้ำผึ้ง)", " honey "),
+        (r"(砂糖|糖|설탕|đường|gula|น้ำตาล)", " sugar "),
+        (r"(塩|鹽|咸|소금|muối|asin|เค็ม)", " salted "),
+        (r"(ピーナッツ|花生|땅콩|kacang(\s*tanah)?|đậu\s*phộng|arachide(s)?|kacang)", " peanuts "),
+        (r"(腰果|カシューナッツ|캐슈너트|hạt\s*điều|kacang\s*mete|cashew(s)?)", " cashews "),
+        (r"(アーモンド|杏仁|almond(s)?|hạnh\s*nhân|kacang\s*almond)", " almonds "),
+        (r"(ピスタチオ|开心果|開心果|피스타치오|hạt\s*dẻ\s*cười)", " pistachios "),
+        (r"(マカダミア|澳洲坚果|澳洲堅果|마카다미아|hạt\s*macca|macadamia)", " macadamia "),
+        (r"(broad\s*beans?|蠶豆|そら豆|fava)", " broad beans "),
+        (r"(green\s*peas?|青豆|えんどう豆|kacang\s*hijau)", " green peas "),
+    ]
+    for pat, repl in replacements:
+        t = re.sub(pat, repl, t, flags=re.I)
+    t = re.sub(r"(\d+)\s*(g|克|グラム|그램)\b", r"\1g", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+# -----------------------------
+# LLM NLU (intent + entities)
+# -----------------------------
+INTENTS = [
+    "greeting","product_discovery","price_lookup","ingredients",
+    "order_status","membership","returns","diet_filter",
+    "faq_generic","smalltalk","sensitive_internal"
+]
+
+NLU_SYSTEM = (
+    "You are an NLU engine for a customer-facing snack brand assistant. "
+    "Detect the user's language and extract structured JSON with intent and entities. "
+    "The assistant answers from company CSVs for products/prices/orders; YOU DO NOT answer now. "
+    "Return ONLY JSON matching this schema:\n"
+    "{\n"
+    '  "language": "en|zh|ja|ko|ms|id|th|vi|tl|auto",\n'
+    '  "intent": "one of: greeting, product_discovery, price_lookup, ingredients, order_status, membership, returns, diet_filter, faq_generic, smalltalk, sensitive_internal",\n'
+    '  "entities": {\n'
+    '    "product_name": "optional string",\n'
+    '    "product_family": "e.g., peanuts/cashews/almonds/pistachios/macadamia/walnuts",\n'
+    '    "size_grams": "integer if pack size like 120g present else null",\n'
+    '    "wants_sku": "boolean if user mentions SKU/code",\n'
+    '    "order_id": "optional string if any",\n'
+    '    "diet_preference": "optional e.g., vegan/healthy",\n'
+    '    "keywords": ["array of short keywords"]\n'
+    "  }\n"
+    "}\n"
+    "Notes:\n"
+    "- price/cost queries → intent=price_lookup\n"
+    "- ingredients/allergens → intent=ingredients\n"
+    "- delivery/track/order number → intent=order_status\n"
+    "- returns/refund/exchange → intent=returns\n"
+    "- loyalty/rewards/points → intent=membership\n"
+    "- casual chit-chat with no business ask → smalltalk\n"
+    "- finance/analytics (sales/revenue/ROI/forecast etc.) → sensitive_internal\n"
+)
+
+def nlu_analyze(user_text: str) -> Optional[dict]:
+    if not (API_URL and API_KEY):
+        return None
+    user_lang_hint = detect_lang(user_text)
+    msgs = [
+        {"role":"system", "content": NLU_SYSTEM},
+        {"role":"user", "content": f"[LANG_HINT={user_lang_hint}] {user_text}"}
+    ]
+    return _llm_json(msgs, max_tokens=500)
+
+# -----------------------------
+# Regex helpers & guards
+# -----------------------------
+GREETINGS = {"hi","hello","hey","hiya","yo","good morning","good afternoon","good evening","morning","afternoon","evening"}
+def is_greeting(q: str) -> bool:
+    s = re.sub(r"[^\w\s]", "", (q or "").lower()).strip()
+    return (s in GREETINGS) or s.startswith("hello")
+
 SENSITIVE_RE = re.compile(
     r"\b("
     r"sales?|revenue|gmv|profit|margin|gross\s*profit|net\s*profit|"
     r"roi|roas|cac|ltv|kpi|okrs?|forecast|trend|mo[mn]|yo[yh]|qoq|"
-    r"campaign|marketing\s*spend|attribution|inventory\s*turnover|sell[- ]through"
+    r"campaign|marketing\s*spend|attribution|inventory\s*turnover|sell[- ]through|finance|financials?"
     r")\b", re.I)
 
-def is_sensitive_query(text: str) -> bool:
-    return bool(SENSITIVE_RE.search(text or ""))
+PRICE_RE = re.compile(
+    r"(\bhow\s*much\b|\bow\s*much\b|howmuch|price|cost|"
+    r"いくら|価格|値段|おいくら|"
+    r"가격|얼마|"
+    r"ราคา|เท่าไร|เท่าไหร่|"
+    r"gi[áa]|bao\s*nhiêu|giá\b|"
+    r"harga|berapa|harganya|"
+    r"magkano|presyo|"
+    r"多少钱|价格|售(价)?"
+    r")", re.I
+)
+
+INGREDIENT_RE = re.compile(
+    r"(ingredient|ingredients|allergen|allergy|contains|"
+    r"成分|配料|アレルゲン|原材料|성분|알레르기|"
+    r"thành\s*phần|dị\s*ứng|"
+    r"bahan|alergen|"
+    r"ส่วนผสม|สารก่อภูมิแพ้|"
+    r"sangkap|alerdyi?)", re.I
+)
+
+DIET_VEGAN_RE   = re.compile(r"(vegan|plant[-\s]*based|純?素|素食|ビーガン|비건|ăn\s*chay|thuần\s*chay)", re.I)
+DIET_HEALTHY_RE = re.compile(r"(healthy|健(康|身)|ヘルシー|건강|sehat|sihat|เพื่อสุขภาพ|masustansya)", re.I)
+
+ORDER_RE = re.compile(
+    r"(order|tracking|track|deliver|delivery|shipp?ing|status|arriv(e|al)|"
+    r"kailan|darating|nasaan|pesanan|pengiriman|livraison|commande|bestellung|発送|配達|配送|배송|出货|出貨)",
+    re.I
+)
+
+SIZE_RE = re.compile(r"(\d+)\s*g\b", re.I)
+def has_explicit_size(text: str) -> bool:
+    return bool(SIZE_RE.search(text or ""))
+
+def wants_sku(q: str) -> bool:
+    ql = (q or "").lower()
+    return ("sku" in ql) or ("code" in ql) or bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_]{5,}$", (q or "").strip()))
 
 # -----------------------------
-# Customer Assistant (FAQ + Products + API)
+# Customer Assistant (CSV is source of truth)
 # -----------------------------
 class CustomerQA:
+    PRICE_COLS_ORDER = [
+        "price_sgd","unit_price_sgd","list_price_sgd","selling_price_sgd","retail_price_sgd",
+        "price","unit_price","list_price","selling_price","retail","amount","unit_amount"
+    ]
+    DATE_COLS = ["updated_at","effective_date","valid_from","date","order_date","created_at","timestamp","datetime","time"]
+    PRODUCT_COL_RE = re.compile(r"(sku_?description|product(_?name)?|item|desc|name|category)", re.I)
+    CCY_SUFFIX = re.compile(r"_(sgd|usd|myr|idr|vnd|thb|php|cny|jpy|krw)$", re.I)
+
     def __init__(self, dm: DataManager):
         self.dm = dm
 
+    # ---------- FAQ ----------
     def _faq_lookup(self, q: str) -> str:
-        faq = self.dm.get_table_like("faq")
-        if faq is None or faq.empty:
-            return ""
-        # normalize candidate columns
-        cols = {c: c for c in faq.columns}
-        qcol = next((c for c in cols if c in ("question","questions","q")), None)
-        acol = next((c for c in cols if c in ("answer","answers","a")), None)
-        if not qcol or not acol:
-            return ""
+        faq = self.dm.get_table_like("faqs") or self.dm.get_table_like("faq")
+        if faq is None or faq.empty: return ""
+        qcols = [c for c in faq.columns if c in ("question","questions","q","prompt")]
+        acols = [c for c in faq.columns if c in ("answer","answers","a","response","reply")]
+        if not qcols or not acols: return ""
+        qcol, acol = qcols[0], acols[0]
         best_ans, best_score = "", 0
         for _, row in faq.iterrows():
             score = fuzz.token_set_ratio(str(row[qcol]), q)
             if score > best_score:
-                best_ans = str(row[acol])
-                best_score = score
+                best_ans = str(row[acol]); best_score = score
         return best_ans if best_score >= 75 else ""
 
-    def _product_lookup(self, q: str) -> str:
-        # Prefer sku_master; else scan all tables for product-ish columns
-        products = []
-        sku_master = self.dm.get_table_like("sku_master")
-        def collect_from(df: pd.DataFrame):
-            nonlocal products
-            if df is None or df.empty: return
-            candidates = [c for c in df.columns if re.search(r"(sku_?description|product|item|desc|name)", c, re.I)]
-            for col in candidates:
-                hits = df[col][df[col].astype(str).str.contains(q, case=False, na=False)]
-                if not hits.empty:
-                    products.extend([str(x) for x in hits.tolist() if isinstance(x, str)])
-
-        if sku_master is not None:
-            collect_from(sku_master)
-
-        if not products:
-            # fallback: scan everything
-            for _, df in self.dm.tables.items():
-                collect_from(df)
-
-        uniq = sorted(set([p for p in products if p.strip()]))
-        if uniq:
-            head = uniq[:10]
-            return "Here are some matching products:\n" + "\n".join(f"- {p}" for p in head)
+    def _faq_snippet(self, keywords: List[str]) -> str:
+        faq = self.dm.get_table_like("faqs") or self.dm.get_table_like("faq")
+        if faq is None or faq.empty: return ""
+        text_cols = [c for c in faq.columns if faq[c].dtype == object]
+        if not text_cols: return ""
+        mask = pd.Series(False, index=faq.index)
+        for c in text_cols:
+            for k in keywords:
+                mask = mask | faq[c].astype(str).str.contains(k, case=False, na=False)
+        if not mask.any(): return ""
+        cand = faq.loc[mask].copy()
+        acols = [c for c in cand.columns if c in ("answer","answers","a","response","reply")]
+        if acols:
+            cand["_len"] = cand[acols[0]].astype(str).str.len()
+            row = cand.sort_values("_len", ascending=True).iloc[0]
+            return str(row[acols[0]]).strip()
+        for c in text_cols:
+            s = cand[c].dropna().astype(str).str.strip()
+            if not s.empty: return s.iloc[0]
         return ""
 
-    def answer(self, q: str) -> str:
-        if is_sensitive_query(q):
-            return ("I’m here to help with product information, membership, orders, delivery "
-                    "and general questions. For sales or internal analytics, please contact our team "
-                    "or use the staff portal. Is there a product or order I can help you with today?")
+    # ---------- Catalogue helpers ----------
+    def _sku_master(self) -> Optional[pd.DataFrame]:
+        return self.dm.get_table_like("sku_master")
 
-        # 1) FAQ hit
+    def _product_hits(self, q: str, limit: int = 10, fuzzy_min: int = 72) -> List[Tuple[str,str,int]]:
+        results: List[Tuple[str,str,int]] = []
+        norm_q = normalize_lang_tokens(q or "")
+        cjk = bool(CJK_RE.search(q or ""))
+        fuzz_min = 48 if cjk else fuzzy_min
+
+        FAMILY_TOKENS = [
+            "peanut","peanuts","cashew","cashews","almond","almonds",
+            "pistachio","pistachios","macadamia","walnut","walnuts",
+            "broad beans","green peas","mix","trail"
+        ]
+        STOP = {
+            "what","do","you","have","got","any","show","me","list","which","that","those",
+            "the","a","an","please","pls","can","could","would","about","tell","give","do you",
+            "berapa","ada","punya","apakah","yang",
+            "mga","ba",
+            "嗎","吗","呢",
+            "多少","幾多","多少錢",
+            "いくら","おいくら","価格","値段"
+        }
+
+        def push(sku: str, label: str, score: int):
+            if label:
+                results.append((sku or "", label.strip(), int(score)))
+
+        def collect_family(df: pd.DataFrame, family: str):
+            if df is None or df.empty or "sku_description" not in df.columns:
+                return
+            mask = df["sku_description"].astype(str).str.contains(family, case=False, na=False)
+            if not mask.any():
+                return
+            sub = df.loc[mask, ["sku","sku_description"]] if "sku" in df.columns else df.loc[mask, ["sku_description"]]
+            for _, row in sub.head(limit * 5).iterrows():
+                sku = str(row.get("sku","")).strip() if "sku" in sub.columns else ""
+                push(sku, str(row["sku_description"]).strip(), 100)
+
+        def collect_tokenized(df: pd.DataFrame):
+            if df is None or df.empty:
+                return
+            cols = df.columns
+            prod_cols = [c for c in cols if self.PRODUCT_COL_RE.search(c)]
+            if not prod_cols:
+                return
+
+            # build token set from query (drop stopwords/short tokens)
+            tokens = []
+            for w in re.split(r"[\s/,\-\(\)]+", norm_q):
+                w = w.strip()
+                if not w or len(w) < 2:
+                    continue
+                if w in STOP:
+                    continue
+                if w.endswith("g") or re.match(r"[a-z][a-z]+", w):
+                    tokens.append(w)
+            tokens = list(dict.fromkeys(tokens))  # dedupe, keep order
+            if not tokens:
+                return
+
+            # quick ANY-token prefilter across product-ish columns
+            any_mask = pd.Series(False, index=df.index)
+            for c in prod_cols:
+                s = df[c].astype(str).str.lower()
+                for t in tokens:
+                    any_mask = any_mask | s.str.contains(re.escape(t), na=False)
+            if not any_mask.any():
+                return
+
+            cand = df.loc[any_mask, ["sku","sku_description"] + prod_cols].copy() if "sku" in df.columns else df.loc[any_mask, ["sku_description"] + prod_cols].copy()
+
+            # scoring: token hits + fuzzy on sku_description if present
+            rows = []
+            for _, row in cand.iterrows():
+                label = ""
+                for c in ("sku_description","product_name","item","name","desc","category"):
+                    if c in cand.columns and str(row.get(c,"")).strip():
+                        label = str(row.get(c)).strip(); break
+                if not label:
+                    continue
+                blob = " ".join([str(row.get(c,"")) for c in prod_cols]).lower()
+                token_hits = sum(1 for t in tokens if t in blob)
+                fuzzy_score = fuzz.token_set_ratio(norm_q, blob)
+                score = token_hits * 20 + fuzzy_score // 5
+                rows.append((str(row.get("sku","")).strip() if "sku" in cand.columns else "", label, score))
+
+            rows.sort(key=lambda x: x[2], reverse=True)
+            for sku, label, score in rows[:limit * 2]:
+                if score >= 20:
+                    push(sku, label, score)
+
+        # Prefer sku_master
+        sm = self._sku_master()
+
+        # 1) Category/family shortcut
+        fam = None
+        for t in FAMILY_TOKENS:
+            if re.search(rf"\b{re.escape(t)}\b", norm_q):
+                fam = t.rstrip("s")
+                break
+        if fam:
+            if isinstance(sm, pd.DataFrame):
+                collect_family(sm, fam)
+            if not results:
+                for _, df in self.dm.tables.items():
+                    collect_family(df, fam)
+            if results:
+                ded = {}
+                for sku, label, score in results:
+                    key = label.lower()
+                    if key not in ded or score > ded[key][2]:
+                        ded[key] = (sku, label, score)
+                return list(ded.values())[:limit]
+
+        # 2) Tokenized search on sku_master, then across all tables
+        if isinstance(sm, pd.DataFrame):
+            collect_tokenized(sm)
+        if not results:
+            for _, df in self.dm.tables.items():
+                collect_tokenized(df)
+        if results:
+            ded = {}
+            for sku, label, score in results:
+                key = label.lower()
+                if key not in ded or score > ded[key][2]:
+                    ded[key] = (sku, label, score)
+            out = list(ded.values())
+            out.sort(key=lambda x: x[2], reverse=True)
+            return out[:limit]
+
+        # 3) Final fuzzy fallback on sku_master descriptions
+        if isinstance(sm, pd.DataFrame) and "sku_description" in sm.columns:
+            tmp = sm[["sku","sku_description"]].drop_duplicates() if "sku" in sm.columns else sm[["sku_description"]].drop_duplicates()
+            tmp["_cand"] = tmp["sku_description"].astype(str).apply(normalize_lang_tokens)
+            tmp["_score"] = tmp["_cand"].apply(lambda s: fuzz.token_set_ratio(norm_q, s))
+            tmp = tmp[tmp["_score"] >= fuzz_min].sort_values("_score", ascending=False).head(limit)
+            out = []
+            for _, row in tmp.iterrows():
+                sku = str(row.get("sku","")).strip() if "sku" in tmp.columns else ""
+                out.append((sku, str(row["sku_description"]).strip(), int(row["_score"])))
+            return out
+
+        return []
+
+    def _best_product_match(self, q: str) -> Optional[Tuple[str,str,int]]:
+        hits = self._product_hits(q, limit=1)
+        return hits[0] if hits else None
+
+    # ---------- Price lookup ----------
+    def _detect_price_columns(self, cols: List[str]) -> List[str]:
+        candidates = []
+        base_rank = {c:i for i,c in enumerate(self.PRICE_COLS_ORDER)}
+        for c in cols:
+            base = self.CCY_SUFFIX.sub("", c)  # strip currency suffix
+            if base in base_rank or ("price" in base) or base.endswith("amount") or base.endswith("retail"):
+                candidates.append(c)
+        candidates.sort(key=lambda c: base_rank.get(self.CCY_SUFFIX.sub("", c), 999))
+        return candidates
+
+    def _detect_currency_from_col(self, col: str) -> str:
+        m = self.CCY_SUFFIX.search(col or "")
+        if m: 
+            return m.group(1).upper()
+        return "SGD"  # default
+
+    def _find_price_in_df_rows(self, df: pd.DataFrame, mask: pd.Series) -> Optional[Tuple[float,str,datetime,str]]:
+        cols = df.columns
+        price_cols = self._detect_price_columns(list(cols))
+        if not price_cols: 
+            return None
+        date_col = None
+        for dc in self.DATE_COLS:
+            if dc in cols: date_col = dc; break
+        sub = df.loc[mask, price_cols + ([date_col] if date_col else [])].copy()
+        if sub.empty: return None
+        if date_col:
+            with pd.option_context('mode.chained_assignment', None):
+                sub[date_col] = pd.to_datetime(sub[date_col], errors="coerce")
+        best = None  # (price, ccy, dt, colname)
+        for _, row in sub.iterrows():
+            dt = row[date_col] if date_col else None
+            for pc in price_cols:
+                val = row.get(pc, None)
+                if pd.isna(val): 
+                    continue
+                if isinstance(val, str):
+                    try: val = float(re.sub(r"[^\d\.]", "", val))
+                    except Exception: 
+                        continue
+                ccy = self._detect_currency_from_col(pc)
+                cand = (float(val), ccy, dt, pc)
+                if best is None:
+                    best = cand
+                else:
+                    _,_,best_dt,_ = best
+                    if (dt or datetime.min) > (best_dt or datetime.min):
+                        best = cand
+        return best
+
+    def _find_price_for_product(self, label: str, sku: str="") -> Optional[Tuple[float,str]]:
+        sm = self._sku_master()
+        if isinstance(sm, pd.DataFrame) and not sm.empty:
+            mask = pd.Series(False, index=sm.index)
+            if sku and "sku" in sm.columns:
+                mask = mask | sm["sku"].astype(str).str.contains(re.escape(sku), case=False, na=False)
+            for c in ["sku_description","product_name","name","item","desc","category"]:
+                if c in sm.columns:
+                    mask = mask | sm[c].astype(str).str.contains(label, case=False, na=False)
+            best = self._find_price_in_df_rows(sm, mask)
+            if best:
+                price, ccy, _, col = best
+                log.info(f"[price] sku_master matched via {col} -> {price} {ccy}")
+                return (price, ccy)
+
+        for name, df in self.dm.tables.items():
+            if df is None or df.empty: 
+                continue
+            cols = df.columns
+            text_cols = [c for c in cols if df[c].dtype == object]
+            mask = pd.Series(False, index=df.index)
+            if sku and "sku" in cols:
+                mask = mask | df["sku"].astype(str).str.contains(re.escape(sku), case=False, na=False)
+            for c in text_cols:
+                mask = mask | df[c].astype(str).str.contains(label, case=False, na=False)
+            if not mask.any(): 
+                continue
+            best = self._find_price_in_df_rows(df, mask)
+            if best:
+                price, ccy, _, col = best
+                log.info(f"[price] {name} matched via {col} -> {price} {ccy}")
+                return (price, ccy)
+
+        return None
+
+    # ---------- Ingredients / allergens ----------
+    def _ingredients_for_product(self, label: str, sku: str="") -> Optional[str]:
+        cand_cols = re.compile(r"(ingredient|ingredients|allergen|allergy|contains|notes?)", re.I)
+        for name, df in self.dm.tables.items():
+            if df is None or df.empty: continue
+            cols = df.columns
+            text_cols = [c for c in cols if df[c].dtype == object]
+            ing_cols = [c for c in cols if cand_cols.search(c)]
+            if not ing_cols: 
+                continue
+            mask = pd.Series(False, index=df.index)
+            if sku and "sku" in cols:
+                mask = mask | df["sku"].astype(str).str.contains(re.escape(sku), case=False, na=False)
+            for c in text_cols:
+                mask = mask | df[c].astype(str).str.contains(label, case=False, na=False)
+            if not mask.any(): 
+                continue
+            sub = df.loc[mask, ing_cols].copy()
+            for c in ing_cols:
+                s = sub[c].dropna().astype(str).str.strip()
+                if not s.empty:
+                    return s.iloc[s.str.len().idxmin()]
+        return None
+
+    # ---------- Orders ----------
+    _ORDER_ID_PAT = re.compile(r"(?:^|[\s#:])([A-Z]{2,4}-?\d{5,}|ORD-?\d{5,}|\d{7,})", re.I)
+
+    def _extract_order_id(self, q: str) -> Optional[str]:
+        m = self._ORDER_ID_PAT.search(q or "")
+        return m.group(1).strip() if m else None
+
+    def _order_tables(self) -> List[pd.DataFrame]:
+        names = ["ecommerce_purchases","sales_transactions","orders","order_history","shipments"]
+        out = []
+        for n in names:
+            df = self.dm.get_table_like(n)
+            if isinstance(df, pd.DataFrame) and not df.empty: out.append(df)
+        return out
+
+    def _find_col(self, df: pd.DataFrame, regex: str, prefs: List[str]=None) -> Optional[str]:
+        prefs = prefs or []
+        for p in prefs:
+            if p in df.columns: return p
+        pat = re.compile(regex, re.I)
+        for c in df.columns:
+            if pat.search(c): return c
+        return None
+
+    def _lookup_order(self, order_id: str) -> Optional[Dict[str,str]]:
+        for df in self._order_tables():
+            id_col = self._find_col(df, r"(order.*(id|no|number)|^order_id$|^order_no$|^order_number$)", ["order_id","order_no","order_number"])
+            if not id_col: continue
+            mask = df[id_col].astype(str).str.fullmatch(re.escape(order_id), case=False, na=False) | \
+                   df[id_col].astype(str).str.contains(re.escape(order_id), case=False, na=False)
+            if not mask.any(): continue
+            row = df.loc[mask].iloc[0].to_dict()
+            status_col  = self._find_col(df, r"(status|state)")
+            track_col   = self._find_col(df, r"(track|consignment|awb|waybill)")
+            courier_col = self._find_col(df, r"(courier|carrier|shipper|logistics)")
+            ship_col    = self._find_col(df, r"(ship.*date|dispatch.*date|shipped)")
+            eta_col     = self._find_col(df, r"(eta|estimated.*arrival|delivery.*date)")
+            when_col    = self._find_col(df, r"(order.*date|created.*date|purchase.*date)")
+            return {
+                "order_id": str(row.get(id_col, order_id)),
+                "status":   str(row.get(status_col, "")) if status_col else "",
+                "tracking": str(row.get(track_col, "")) if track_col else "",
+                "courier":  str(row.get(courier_col, "")) if courier_col else "",
+                "ship_date":str(row.get(ship_col, "")) if ship_col else "",
+                "eta":      str(row.get(eta_col, "")) if eta_col else "",
+                "order_date":str(row.get(when_col, "")) if when_col else "",
+            }
+        return None
+
+    # ---------- High-level handlers ----------
+    def handle_greeting(self, q: str, user_lang: str) -> str:
+        base = f"Hi! I’m {ASSISTANT_NAME} from {COMPANY_NAME}. I can help with products, ingredients, allergens, orders, delivery and membership."
+        return render_reply(base, user_lang)
+
+    def handle_sensitive(self, q: str, user_lang: str) -> str:
+        base = ("I’m here to help with products, ingredients, allergens, orders, delivery and membership. "
+                "For internal business figures or analytics, please contact our team via the staff channel.")
+        return render_reply(base, user_lang)
+
+    def handle_order(self, q: str, user_lang: str, nlu_order_id: Optional[str]=None) -> str:
+        oid = nlu_order_id or self._extract_order_id(q)
+        if oid:
+            row = self._lookup_order(oid)
+            if row:
+                parts = [f"Order {row['order_id']}"]
+                if row["status"]:   parts.append(f"status: {row['status']}")
+                if row["courier"]:  parts.append(f"courier: {row['courier']}")
+                if row["tracking"]: parts.append(f"tracking: {row['tracking']}")
+                if row["ship_date"]:parts.append(f"shipped: {row['ship_date']}")
+                if row["eta"]:      parts.append(f"ETA: {row['eta']}")
+                base = " | ".join(parts)
+                hint = self._faq_snippet(["delivery","shipping","courier","arrive","days"])
+                if hint: base += f"\n{hint}"
+                return render_reply(base, user_lang)
+            base = "Sorry, I couldn’t find that order. Please check the order number or share the email/phone used at checkout."
+            return render_reply(base, user_lang)
+        base = "Please share your order number and the email or mobile number used at checkout so I can check the status."
+        hint = self._faq_snippet(["delivery","shipping","courier","arrive","days"])
+        if hint: base += f"\n{hint}"
+        return render_reply(base, user_lang)
+
+    def handle_product_discovery(self, q: str, user_lang: str, nlu_family: Optional[str]=None, nlu_name: Optional[str]=None, wants_sku_flag: Optional[bool]=None) -> str:
+        # Reinforce the query using NLU hints without trusting them for facts
+        augment = " ".join([x for x in [nlu_family or "", nlu_name or ""] if x]).strip()
+        q_aug = (q + " " + augment).strip() if augment else q
+        hits = self._product_hits(q_aug, limit=10)
+        if not hits:
+            base = "I couldn’t find that yet. Tell me a product name (e.g., “Roasted Peanuts 120g”) and I’ll look it up."
+            return render_reply(base, user_lang)
+        show_sku = wants_sku_flag if wants_sku_flag is not None else wants_sku(q)
+        lines = []
+        seen = set()
+        for sku, label, _ in hits:
+            key = label.lower()
+            if key in seen: continue
+            seen.add(key)
+            if show_sku and sku and sku.lower() not in ("nan","none",""):
+                lines.append(f"- {sku} – {label}")
+            else:
+                lines.append(f"- {label}")
+        base = "Here are some matching products:\n" + "\n".join(lines[:10])
+        return render_reply(base, user_lang)
+
+    def handle_price(self, q: str, user_lang: str, nlu_family: Optional[str]=None, nlu_name: Optional[str]=None, nlu_size: Optional[int]=None) -> str:
+        # Prefer explicit size if NLU found one
+        explicit = has_explicit_size(q) or bool(nlu_size)
+        q_aug = q
+        if nlu_size and f"{nlu_size}g" not in q.lower():
+            q_aug = f"{q} {nlu_size}g"
+        if nlu_family and nlu_family.lower() not in q.lower():
+            q_aug = f"{q_aug} {nlu_family}"
+
+        if explicit:
+            bm = self._best_product_match(q_aug)
+            if not bm:
+                return self.handle_product_discovery(q_aug, user_lang, nlu_family, nlu_name)
+            sku, label, _ = bm
+            price = self._find_price_for_product(label, sku)
+            if price:
+                amount, curr = price
+                base = f"{label}: {curr} ${amount:,.2f}"
+                return render_reply(base, user_lang)
+            base = f"Pricing for {label} may vary across stores. If you share a store or zip/postal code, I can check more precisely."
+            return render_reply(base, user_lang)
+
+        # Category range (no explicit pack size)
+        sm = self._sku_master()
+        norm_q = normalize_lang_tokens(q_aug or "")
+        family_token = None
+        for token in ("peanut", "peanuts", "cashew", "cashews", "almond", "almonds",
+                      "pistachio", "pistachios", "macadamia", "walnut", "walnuts",
+                      "broad beans", "green peas"):
+            if token in norm_q or (nlu_family and token == nlu_family.rstrip("s").lower()):
+                family_token = token.rstrip("s")
+                break
+
+        if family_token and isinstance(sm, pd.DataFrame) and "sku_description" in sm.columns:
+            fam_mask = sm["sku_description"].astype(str).str.contains(family_token, case=False, na=False)
+            fam = sm.loc[fam_mask].copy()
+            prices = []
+            if not fam.empty:
+                for _, row in fam.iterrows():
+                    p = self._find_price_for_product(str(row["sku_description"]), str(row.get("sku", "")))
+                    if p: prices.append(p[0])
+            if prices:
+                base = f"{family_token.capitalize()}s: approximately ${min(prices):,.2f}–${max(prices):,.2f} depending on pack size and variant."
+                return render_reply(base, user_lang)
+
+        return self.handle_product_discovery(q_aug, user_lang, nlu_family, nlu_name)
+
+    def handle_ingredients(self, q: str, user_lang: str, nlu_family: Optional[str]=None, nlu_name: Optional[str]=None) -> str:
+        q_aug = (q + " " + (nlu_name or "") + " " + (nlu_family or "")).strip()
+        bm = self._best_product_match(q_aug)
+        if not bm:
+            return self.handle_product_discovery(q_aug, user_lang, nlu_family, nlu_name)
+        sku, label, _ = bm
+        ing = self._ingredients_for_product(label, sku)
+        if ing:
+            base = f"{label} — Ingredients/Allergens: {ing}"
+            return render_reply(base, user_lang)
+        base = f"I don’t have a confirmed ingredient list for {label} in the current files. If you share a photo or exact SKU, I can try again."
+        return render_reply(base, user_lang)
+
+    def handle_diet(self, q: str, user_lang: str, diet_pref: Optional[str]=None) -> str:
+        sm = self._sku_master()
+        matches = []
+        if isinstance(sm, pd.DataFrame) and not sm.empty:
+            cols = sm.columns
+            diet_cols = [c for c in cols if re.search(r"(vegan|vegetarian|healthy|tags?)", c, re.I)]
+            if diet_cols:
+                mask = pd.Series(False, index=sm.index)
+                if (diet_pref and "vegan" in diet_pref.lower()) or DIET_VEGAN_RE.search(q or ""):
+                    for c in diet_cols:
+                        mask = mask | sm[c].astype(str).str.contains("vegan", case=False, na=False)
+                elif (diet_pref and "healthy" in diet_pref.lower()) or DIET_HEALTHY_RE.search(q or ""):
+                    for c in diet_cols:
+                        mask = mask | sm[c].astype(str).str.contains("healthy|baked|reduced|low|unsalted|natural", case=False, na=False)
+                if mask.any():
+                    sel = sm.loc[mask, ["sku","sku_description"]].drop_duplicates() if "sku" in cols else sm.loc[mask, ["sku_description"]].drop_duplicates()
+                    for _, row in sel.head(10).iterrows():
+                        matches.append((str(row.get("sku","")).strip(), str(row["sku_description"]).strip(), 100))
+        if not matches and isinstance(sm, pd.DataFrame) and "sku_description" in sm.columns:
+            series = sm["sku_description"].dropna().astype(str)
+            if (diet_pref and "vegan" in (diet_pref or "").lower()) or DIET_VEGAN_RE.search(q or ""):
+                nonvegan = re.compile(r"(ikan\s*bilis|anchov|fish|shrimp|prawn|chicken|beef|pork|milk|butter|cheese|egg|honey)", re.I)
+                keep = series[~series.str.contains(nonvegan)]
+                for s in keep.head(10):
+                    matches.append(("", s, 75))
+            elif (diet_pref and "healthy" in (diet_pref or "").lower()) or DIET_HEALTHY_RE.search(q or ""):
+                keep = series[series.str.contains(r"(baked|roasted|unsalted|natural|reduced)", case=False, na=False)]
+                for s in keep.head(10):
+                    matches.append(("", s, 75))
+
+        if matches:
+            base_lines = []
+            show_sku = wants_sku(q)
+            seen = set()
+            for sku,label,_ in matches[:10]:
+                key = label.lower()
+                if key in seen: continue
+                seen.add(key)
+                if show_sku and sku:
+                    base_lines.append(f"- {sku} – {label}")
+                else:
+                    base_lines.append(f"- {label}")
+            base = "Here are some options that may fit:\n" + "\n".join(base_lines)
+            return render_reply(base, user_lang)
+
+        base = "I couldn’t confidently filter by diet from the current files. Tell me a specific product name and I’ll check its ingredients."
+        return render_reply(base, user_lang)
+
+    def handle_membership(self, q: str, user_lang: str) -> str:
+        ans = self._faq_snippet(["member","reward","points","loyalty","join","signup","加入","会员","會員","ポイント","สมาชิก"])
+        if ans:
+            return render_reply(ans, user_lang)
+        base = "For membership and points, please see our rewards section or share your registered email so I can look it up."
+        return render_reply(base, user_lang)
+
+    def handle_returns(self, q: str, user_lang: str) -> str:
+        ans = self._faq_snippet(["return","refund","exchange","policy","退货","退貨","返品","환불"])
+        if ans:
+            return render_reply(ans, user_lang)
+        base = "You can arrange returns or exchanges according to our returns policy. Please keep your receipt and order number handy."
+        return render_reply(base, user_lang)
+
+    def handle_faq(self, q: str, user_lang: str) -> str:
         ans = self._faq_lookup(q)
         if ans:
-            return ans
+            return render_reply(ans, user_lang)
+        base = "I’ll do my best to help with products, ingredients, allergens, orders and delivery. Tell me a product name or your order number."
+        return render_reply(base, user_lang)
 
-        # 2) Product catalogue hit
-        ans = self._product_lookup(q)
-        if ans:
-            return ans
+    def handle_smalltalk(self, q: str, user_lang: str) -> str:
+        """LLM-powered chit-chat; no product/price claims here."""
+        if not (API_URL and API_KEY):
+            # Friendly fallback
+            base = "Happy to chat! If you need help with products, ingredients or orders, I’m here."
+            return render_reply(base, user_lang)
+        sysmsg = {
+            "role": "system",
+            "content": (
+                f"You are {ASSISTANT_NAME}, a friendly Customer Service Officer at {COMPANY_NAME}. "
+                "Engage in brief, warm small talk in the user's language. "
+                "Do NOT invent product availability or prices; if the user asks for those, say you can look them up. "
+                "Keep replies concise (<= 2 short paragraphs). Plain text only."
+            )
+        }
+        txt = _llm_plain([sysmsg, {"role":"user","content": q}], max_tokens=240)
+        return txt
 
-        # 3) Fallback → small context to the model
-        faqs = self.dm.get_table_like("faq")
-        skus = self.dm.get_table_like("sku_master")
-        faq_examples = (faqs.head(10).to_dict(orient="records") if isinstance(faqs, pd.DataFrame) and not faqs.empty else [])
-        sku_examples = (skus.head(10).to_dict(orient="records") if isinstance(skus, pd.DataFrame) and not skus.empty else [])
+    # ---------- Orchestrator with LLM NLU ----------
+    def answer(self, q: str) -> str:
+        # Step 1: Ask LLM to understand intent/entities & language
+        nlu = nlu_analyze(q)
+        user_lang = (nlu.get("language") if isinstance(nlu, dict) else None) or detect_lang(q)
 
-        return call_model([
-            {"role":"system","content":(
-                f"You are Nibbles, a warm {COMPANY_NAME} customer service officer. "
-                "Use the company FAQ and product catalogue when possible. "
-                "Do not answer internal business questions (sales, revenue, profit, ROI, etc.). "
-                "Keep responses short, friendly, and accurate. "
-                f"Sample FAQs: {json.dumps(faq_examples, ensure_ascii=False)} "
-                f"Sample products: {json.dumps(sku_examples, ensure_ascii=False)}"
-            )},
-            {"role":"user","content": q}
-        ])
+        # Step 2: Route by LLM intent (fallback to regex if LLM unavailable)
+        intent = None
+        ents = {}
+        if isinstance(nlu, dict):
+            intent = nlu.get("intent")
+            ents = nlu.get("entities") or {}
+        else:
+            # Fallback heuristic routing
+            if is_greeting(q): intent = "greeting"
+            elif re.search(SENSITIVE_RE, q or ""): intent = "sensitive_internal"
+            elif re.search(ORDER_RE, q or ""): intent = "order_status"
+            elif re.search(DIET_VEGAN_RE, q or "") or re.search(DIET_HEALTHY_RE, q or ""): intent = "diet_filter"
+            elif re.search(INGREDIENT_RE, q or ""): intent = "ingredients"
+            elif re.search(PRICE_RE, q or ""): intent = "price_lookup"
+            elif any(w in (q or "").lower() for w in ["member","loyalty","points","rewards","会员","會員","ポイント","สมาชิก"]): intent = "membership"
+            elif any(w in (q or "").lower() for w in ["return","refund","exchange","退货","退貨","返品","환불"]): intent = "returns"
+            else: intent = "product_discovery" if (CJK_RE.search(q or "") or any(w in (q or "").lower() for w in ["peanut","almond","cashew","pistachio","macadamia","walnut","nuts","price","pack","size","sku","code"])) else "faq_generic"
+
+        intent = (intent or "").strip().lower()
+        # Step 3: Enforce CSV-as-truth by using NLU hints only to augment searches
+        if intent == "greeting":
+            return self.handle_greeting(q, user_lang)
+        if intent == "sensitive_internal":
+            return self.handle_sensitive(q, user_lang)
+        if intent == "order_status":
+            return self.handle_order(q, user_lang, ents.get("order_id"))
+        if intent == "diet_filter":
+            return self.handle_diet(q, user_lang, ents.get("diet_preference"))
+        if intent == "ingredients":
+            return self.handle_ingredients(q, user_lang, ents.get("product_family"), ents.get("product_name"))
+        if intent == "price_lookup":
+            return self.handle_price(q, user_lang, ents.get("product_family"), ents.get("product_name"), ents.get("size_grams"))
+        if intent == "membership":
+            return self.handle_membership(q, user_lang)
+        if intent == "returns":
+            return self.handle_returns(q, user_lang)
+        if intent == "smalltalk":
+            return self.handle_smalltalk(q, user_lang)
+        if intent == "product_discovery":
+            return self.handle_product_discovery(q, user_lang, ents.get("product_family"), ents.get("product_name"), ents.get("wants_sku"))
+        # default
+        return self.handle_faq(q, user_lang)
 
 # -----------------------------
 # Flask App + UI (gentle orange)
 # -----------------------------
 app = Flask(__name__)
+
 INDEX_HTML_TPL = Template("""
 <!doctype html>
 <html>
@@ -249,12 +966,12 @@ INDEX_HTML_TPL = Template("""
   .container{max-width:720px;margin:0 auto;padding:20px}
   .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
   .header{background:linear-gradient(135deg,var(--accent),#ffd39a);color:#2b2b2b;padding:20px;text-align:center}
-  .header h1{margin:0 0 6px;font-size:22px}
+  .header h1{margin:0 0 6px;font-size:22px;letter-spacing:.3px}
   .header p{margin:0;opacity:.85;font-size:13px}
   .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#fffdf9}
   .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
   .user{align-self:flex-end;background:var(--accent);color:#1f160d}
-  .bot{align_self:flex-start;background:#ffffff;color:#2b2b2b;border:1px solid #eee}
+  .bot{align-self:flex-start;background:#ffffff;color:#2b2b2b;border:1px solid #eee}
   .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
   .composer{display:flex;padding:14px;border-top:1px solid #eee;background:#fff}
   .input-wrap{flex:1;position:relative}
@@ -264,6 +981,7 @@ INDEX_HTML_TPL = Template("""
   button:hover{background:var(--accent-dark)}
   .typing{color:#666;font-style:italic;align-self:flex-start}
   .hint{font-size:12px;color:#6b6b6b;margin-top:6px}
+  a{color:#e76f51}
   </style>
 </head>
 <body>
@@ -271,7 +989,7 @@ INDEX_HTML_TPL = Template("""
     <div class="widget">
       <div class="header">
         <h1>${BOT}</h1>
-        <p>${BOT} assists customers of Cashew4Nuts. Ask about products, membership, orders, delivery, and general info.</p>
+        <p>${BOT} assists customers of Cashew4Nuts. Ask about products, ingredients, allergens, orders, delivery and membership.</p>
       </div>
       <div id="chat" class="chat">
         <div class="bubble bot">
@@ -303,6 +1021,9 @@ function escapeHtml(str){
     return chars[tag] || tag;
   });
 }
+function linkify(el){
+  el.innerHTML = el.innerHTML.replace(/(https?:\\/\\/[^\\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+}
 
 async function sendMsg(){
   const box=document.getElementById('msg');
@@ -322,7 +1043,10 @@ async function sendMsg(){
 
   const speaker = escapeHtml(data.speaker || '${BOT}');
   const reply   = escapeHtml(data.reply || '');
-  chat.insertAdjacentHTML('beforeend','<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>');
+  const html = '<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>';
+  chat.insertAdjacentHTML('beforeend', html);
+  const bubbles = chat.getElementsByClassName('bubble');
+  linkify(bubbles[bubbles.length-1]);
   chat.scrollTop=chat.scrollHeight;
 }
 </script>
@@ -343,7 +1067,20 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "data_dir": str(DATA_DIR), "tables": sorted(list(dm.tables.keys()))})
+    price_cols_preview = {}
+    for name, df in dm.tables.items():
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            cols = list(df.columns)
+            cand = [c for c in cols if ("price" in c) or c.endswith("amount") or re.search(r"_(sgd|usd|myr|idr|vnd|thb|php|cny|jpy|krw)$", c)]
+            price_cols_preview[name] = cand[:8]
+    return jsonify({
+        "ok": True,
+        "data_dir_raw": _raw_dir,
+        "data_dir_resolved": str(DATA_DIR),
+        "exists": DATA_DIR.exists(),
+        "tables": {name: {"rows": int(df.shape[0]), "cols": int(df.shape[1])} for name, df in dm.tables.items()},
+        "price_columns_preview": price_cols_preview
+    })
 
 @app.route("/chat", methods=["POST"])
 def chat():
