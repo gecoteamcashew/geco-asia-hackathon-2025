@@ -1,0 +1,344 @@
+# NibblesChat (customer) – Website widget
+# Flask chatbot with API, dynamic CSV ingestion, FAQ & product lookups
+# - Draws from all CSVs for FAQs/products
+# - Politely rejects sensitive business queries (sales/revenue/profit/ROI/etc.)
+# - Gentle orange theme
+# - Env: API_URL, API_KEY, MODEL, DATA_DIR, NIBBLES_PORT (optional), PORT (fallback)
+# - Default port if none set: 5001
+
+import os, re, subprocess, sys, logging, json
+from pathlib import Path
+from string import Template
+from typing import Dict, List, Optional
+from dotenv import load_dotenv
+
+# -----------------------------
+# Logging
+# -----------------------------
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("nibbles")
+
+# -----------------------------
+# Dependencies
+# -----------------------------
+REQUIRED = ["flask", "pandas", "fuzzywuzzy", "python-levenshtein",
+            "requests", "openpyxl", "python-dotenv"]
+def ensure_deps():
+    import importlib
+    missing = []
+    for pkg in REQUIRED:
+        mod = "Levenshtein" if pkg == "python-levenshtein" else pkg
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+ensure_deps()
+
+import pandas as pd
+from flask import Flask, request, jsonify, render_template_string
+from fuzzywuzzy import fuzz
+import requests
+
+# -----------------------------
+# Load env
+# -----------------------------
+load_dotenv()
+API_URL  = os.getenv("API_URL", "").strip()
+API_KEY  = os.getenv("API_KEY", "").strip()
+MODEL    = os.getenv("MODEL", "openai/gpt-oss-120b")
+DATA_DIR = Path(os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data"))
+PORT     = int(os.getenv("NIBBLES_PORT", os.getenv("PORT", "5001")))
+
+ASSISTANT_NAME = "Nibbles"
+
+# -----------------------------
+# Data Manager (dynamic CSV loader)
+# -----------------------------
+class DataManager:
+    def __init__(self, data_dir: Path):
+        self.dir = Path(data_dir)
+        self.tables: Dict[str, pd.DataFrame] = {}
+        self._load_all()
+
+    def _safe_csv(self, path: Path) -> pd.DataFrame:
+        df = pd.DataFrame()
+        for enc in ("utf-8", "utf-8-sig", "latin-1"):
+            try:
+                df = pd.read_csv(path, encoding=enc)
+                break
+            except Exception:
+                continue
+        if df.empty:
+            log.warning(f"[csv] Failed to load {path}")
+            return df
+        # cleanup
+        df.columns = [str(c).replace("\u00A0", " ").strip().lower() for c in df.columns]
+        for c in df.columns:
+            if df[c].dtype == object:
+                df[c] = df[c].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
+        return df
+
+    def _load_all(self):
+        log.info(f"[load] scanning {self.dir} for CSV files…")
+        if not self.dir.exists():
+            log.error(f"[load] directory not found: {self.dir}")
+            return
+        for path in self.dir.rglob("*.csv"):
+            key = path.stem.lower().replace(" ", "_")
+            df = self._safe_csv(path)
+            self.tables[key] = df
+            log.info(f"[load] {key}: {len(df)} rows, {len(df.columns)} cols")
+
+    def get_table_like(self, key_fragment: str) -> Optional[pd.DataFrame]:
+        """Return the first table whose name contains key_fragment (case-insensitive)."""
+        key_fragment = key_fragment.lower()
+        for k, v in self.tables.items():
+            if key_fragment in k:
+                return v
+        return None
+
+# -----------------------------
+# Model caller (plain text)
+# -----------------------------
+def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
+    if not API_KEY or not API_URL:
+        return "Assistant is temporarily unavailable. Please try again later."
+    try:
+        messages = [{"role": "system", "content":
+                     "Always answer in plain text only. "
+                     "Do not use Markdown, bold, tables, or special formatting."}] + messages
+
+        r = requests.post(
+            API_URL,
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={"model": MODEL, "messages": messages, "max_tokens": max_tokens},
+            timeout=20,
+        )
+        reply = r.json()["choices"][0]["message"]["content"].strip()
+        reply = re.sub(r"[*_`#>|]", "", reply)  # strip stray markdown
+        return reply
+    except Exception as e:
+        log.error(f"[api] error: {e}")
+        return "Sorry, I couldn’t connect to the assistant service."
+
+# -----------------------------
+# Sensitive-topic gate (politely refuse)
+# -----------------------------
+SENSITIVE_RE = re.compile(
+    r"\b("
+    r"sales?|revenue|gmv|profit|margin|gross\s*profit|net\s*profit|"
+    r"roi|roas|cac|ltv|kpi|okrs?|forecast|trend|mo[mn]|yo[yh]|qoq|"
+    r"campaign|marketing\s*spend|attribution|inventory\s*turnover|sell[- ]through"
+    r")\b", re.I)
+
+def is_sensitive_query(text: str) -> bool:
+    return bool(SENSITIVE_RE.search(text or ""))
+
+# -----------------------------
+# Customer Assistant (FAQ + Products + API)
+# -----------------------------
+class CustomerQA:
+    def __init__(self, dm: DataManager):
+        self.dm = dm
+
+    def _faq_lookup(self, q: str) -> str:
+        faq = self.dm.get_table_like("faq")
+        if faq is None or faq.empty:
+            return ""
+        # normalize candidate columns
+        cols = {c: c for c in faq.columns}
+        qcol = next((c for c in cols if c in ("question","questions","q")), None)
+        acol = next((c for c in cols if c in ("answer","answers","a")), None)
+        if not qcol or not acol:
+            return ""
+        best_ans, best_score = "", 0
+        for _, row in faq.iterrows():
+            score = fuzz.token_set_ratio(str(row[qcol]), q)
+            if score > best_score:
+                best_ans = str(row[acol])
+                best_score = score
+        return best_ans if best_score >= 75 else ""
+
+    def _product_lookup(self, q: str) -> str:
+        # Prefer sku_master; else scan all tables for product-ish columns
+        products = []
+        sku_master = self.dm.get_table_like("sku_master")
+        def collect_from(df: pd.DataFrame):
+            nonlocal products
+            if df is None or df.empty: return
+            candidates = [c for c in df.columns if re.search(r"(sku_?description|product|item|desc|name)", c, re.I)]
+            for col in candidates:
+                hits = df[col][df[col].astype(str).str.contains(q, case=False, na=False)]
+                if not hits.empty:
+                    products.extend([str(x) for x in hits.tolist() if isinstance(x, str)])
+
+        if sku_master is not None:
+            collect_from(sku_master)
+
+        if not products:
+            # fallback: scan everything
+            for _, df in self.dm.tables.items():
+                collect_from(df)
+
+        uniq = sorted(set([p for p in products if p.strip()]))
+        if uniq:
+            head = uniq[:10]
+            return "Here are some matching products:\n" + "\n".join(f"- {p}" for p in head)
+        return ""
+
+    def answer(self, q: str) -> str:
+        if is_sensitive_query(q):
+            return ("I’m here to help with product information, membership, orders, delivery "
+                    "and general questions. For sales or internal analytics, please contact our team "
+                    "or use the staff portal. Is there a product or order I can help you with today?")
+
+        # 1) FAQ hit
+        ans = self._faq_lookup(q)
+        if ans:
+            return ans
+
+        # 2) Product catalogue hit
+        ans = self._product_lookup(q)
+        if ans:
+            return ans
+
+        # 3) Fallback → small context to the model
+        faqs = self.dm.get_table_like("faq")
+        skus = self.dm.get_table_like("sku_master")
+        faq_examples = (faqs.head(10).to_dict(orient="records") if isinstance(faqs, pd.DataFrame) and not faqs.empty else [])
+        sku_examples = (skus.head(10).to_dict(orient="records") if isinstance(skus, pd.DataFrame) and not skus.empty else [])
+
+        return call_model([
+            {"role":"system","content":(
+                "You are Nibbles, a warm Camel Nuts customer service officer. "
+                "Use the company FAQ and product catalogue when possible. "
+                "Do not answer internal business questions (sales, revenue, profit, ROI, etc.). "
+                "Keep responses short, friendly, and accurate. "
+                f"Sample FAQs: {json.dumps(faq_examples, ensure_ascii=False)} "
+                f"Sample products: {json.dumps(sku_examples, ensure_ascii=False)}"
+            )},
+            {"role":"user","content": q}
+        ])
+
+# -----------------------------
+# Flask App + UI (gentle orange)
+# -----------------------------
+app = Flask(__name__)
+INDEX_HTML_TPL = Template("""
+<!doctype html>
+<html>
+<head>
+  <title>${BOT}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+  :root{ --accent:#f4a261; --accent-dark:#e76f51; --bg:#fffaf3; }
+  *{box-sizing:border-box}
+  body{background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
+  .container{max-width:720px;margin:0 auto;padding:20px}
+  .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
+  .header{background:linear-gradient(135deg,var(--accent),#ffd39a);color:#2b2b2b;padding:20px;text-align:center}
+  .header h1{margin:0 0 6px;font-size:22px}
+  .header p{margin:0;opacity:.85;font-size:13px}
+  .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#fffdf9}
+  .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
+  .user{align-self:flex-end;background:var(--accent);color:#1f160d}
+  .bot{align-self:flex-start;background:#ffffff;color:#2b2b2b;border:1px solid #eee}
+  .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
+  .composer{display:flex;padding:14px;border-top:1px solid #eee;background:#fff}
+  .input-wrap{flex:1;position:relative}
+  textarea{width:100%;border-radius:24px;padding:12px 88px 12px 14px;border:2px solid #eee;resize:none;font-family:inherit;font-size:14px;outline:none}
+  textarea:focus{border-color:var(--accent)}
+  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--accent);color:#1f160d;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
+  button:hover{background:var(--accent-dark)}
+  .typing{color:#666;font-style:italic;align-self:flex-start}
+  .hint{font-size:12px;color:#6b6b6b;margin-top:6px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="widget">
+      <div class="header">
+        <h1>${BOT}</h1>
+        <p>Ask about products, membership, orders, delivery, and general info. For internal analytics, please contact our team.</p>
+      </div>
+      <div id="chat" class="chat">
+        <div class="bubble bot">
+          <div class="badge">${BOT}</div>
+Hi! I’m ${BOT}. I can help with:
+• Products & availability
+• Ingredients & allergens
+• Orders, delivery & membership
+        </div>
+        <div class="hint">Tip: You can ask in your preferred language.</div>
+      </div>
+      <div class="composer">
+        <div class="input-wrap">
+          <textarea id="msg" rows="1" placeholder="Type your message…" onkeydown="handleEnter(event)"></textarea>
+          <button onclick="sendMsg()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+function handleEnter(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); } }
+function autoResize(el){ el.style.height='auto'; el.style.height=el.scrollHeight + 'px'; }
+document.getElementById('msg').addEventListener('input', function(){ autoResize(this); });
+
+function escapeHtml(str){
+  return str.replace(/[&<>'"]/g, function(tag){
+    const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
+    return chars[tag] || tag;
+  });
+}
+
+async function sendMsg(){
+  const box=document.getElementById('msg');
+  const text=box.value.trim();
+  if(!text) return;
+  const chat=document.getElementById('chat');
+  chat.insertAdjacentHTML('beforeend','<div class="bubble user">'+escapeHtml(text)+'</div>');
+  box.value=''; autoResize(box); chat.scrollTop=chat.scrollHeight;
+
+  const typing=document.createElement('div');
+  typing.className='typing'; typing.innerText='Assistant is typing…';
+  chat.appendChild(typing); chat.scrollTop=chat.scrollHeight;
+
+  let resp = await fetch('/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message:text})});
+  let data = await resp.json();
+  chat.removeChild(typing);
+
+  const speaker = escapeHtml(data.speaker || '${BOT}');
+  const reply   = escapeHtml(data.reply || '');
+  chat.insertAdjacentHTML('beforeend','<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>');
+  chat.scrollTop=chat.scrollHeight;
+}
+</script>
+</body>
+</html>
+""")
+
+# -----------------------------
+# Wire up app
+# -----------------------------
+dm = DataManager(DATA_DIR)
+cust = CustomerQA(dm)
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return render_template_string(INDEX_HTML_TPL.safe_substitute(BOT=ASSISTANT_NAME))
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    msg = (request.json.get("message") or "").strip()
+    if not msg:
+        return jsonify({"reply": "Say something!", "speaker": ASSISTANT_NAME})
+    reply = cust.answer(msg)
+    return jsonify({"reply": reply, "speaker": ASSISTANT_NAME})
+
+if __name__ == "__main__":
+    print(f"🚀 NibblesChat running at http://127.0.0.1:{PORT}/  (DATA_DIR={DATA_DIR})")
+    app.run(host="127.0.0.1", port=PORT)
