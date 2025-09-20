@@ -1,19 +1,10 @@
 # chatbot_app.py
-# One unlocked assistant with two personas:
-# - Clarity (staff analytics) for sales/data/analytics queries
-# - Nibbles (customer support) for everything else
+# Clarity: one unlocked assistant with dual persona
+# - Data/Sales/Analytics → Clarity tone
+# - Everything else → Nibbles tone
 #
-# Features:
-# - Robust CSV loader (recursive, tolerant encodings, normalized columns)
-# - Sales corpus across all tables; prefers full names from sku_master.csv (sku_description)
-# - Trend, Top/Bottom (default N=5), Totals; Year / Quarter / Half filters
-# - Product fuzzy-match improved (sku_master first; fallback to sales names + token match)
-# - Catalogue/FAQ lookups improved (multi-table + fuzzy)
-# - Data introspection: “describe column X in Y.csv”
-# - Artificial dashboard link for complex requests (PoC)
-# - Cerulean UI theme
-#
-# Env: API_URL, API_KEY, MODEL, DATA_DIR, COMPANY_NAME (optional)
+# Branding: default company is Cashew4Nuts.
+# Any occurrence of "Camel Nuts" (any case/spacing/hyphenation) is masked to "Cashew4Nuts".
 
 import os, re, sys, json, uuid, logging, subprocess
 from pathlib import Path
@@ -57,28 +48,70 @@ load_dotenv()
 API_URL   = (os.getenv("API_URL") or "").strip()
 API_KEY   = (os.getenv("API_KEY") or "").strip()
 MODEL     = (os.getenv("MODEL") or "openai/gpt-oss-120b").strip()
-# Prefer /mnt/data if present (uploaded files), else fallback path
 _default_dir = Path("/mnt/data") if Path("/mnt/data").exists() else Path(r"C:\Team_Cashew_Synthetic_Data")
 DATA_DIR  = Path(os.getenv("DATA_DIR", str(_default_dir)))
-COMPANY   = (os.getenv("COMPANY_NAME") or "Camel Nuts").strip()
+COMPANY   = (os.getenv("COMPANY_NAME") or "Cashew4Nuts").strip()  # ← default brand
 
 ASSISTANT_NAME_CUSTOMER = "Nibbles"
 ASSISTANT_NAME_STAFF    = "Clarity"
 
 # -----------------------------
-# Helpers (routing + links)
+# Branding sanitizer
+# -----------------------------
+_CAMEL_RE = re.compile(r"camel[\s\u00A0\-]*nuts[’'s]*", re.I)
+def brand_sanitize(s: str) -> str:
+    if not isinstance(s, str): return s
+    return _CAMEL_RE.sub(COMPANY, s)
+
+# -----------------------------
+# Routing helpers
 # -----------------------------
 ANALYTICS_WORDS = (
-    "sale", "sales", "revenue", "net sales", "gross", "amount",
-    "orders", "transactions", "sku", "inventory",
-    "top", "bottom", "trend", "quarter", "q1", "q2", "q3", "q4",
-    "half", "h1", "h2", "roi", "roas", "ltv", "campaign", "marketing", "spend",
-    "by ", "vs ", "compare", "year", "month"
+    "sale","sales","revenue","net sales","gross","amount",
+    "orders","transactions","sku","inventory",
+    "top","bottom","trend","quarter","q1","q2","q3","q4",
+    "half","h1","h2","by ","vs ","compare","year","month",
+    "purchases","ecommerce"
 )
 YEAR_PAT   = re.compile(r"\b(20\d{2})\b")
 RANGE_PAT  = re.compile(r"\bfrom\s+(20\d{2})\s+(?:to|-|–)\s+(20\d{2})\b", re.I)
 
+GREETINGS = {
+    "hi","hello","hey","hiya","yo",
+    "good morning","good afternoon","good evening","morning","afternoon","evening"
+}
+
+CATALOG_HINT_WORDS = {
+    "have","availability","available","stock","price","cost","sku","item","product",
+    "ingredients","ingredient","allergen","allergy","nutritional","nutrition",
+    "grams","g","kg","pack","size","flavor","flavour",
+    "cashew","almond","peanut","walnut","pistachio","macadamia",
+    "broad","beans","mix","trail","snack","roasted","honey","satay"
+}
+
+_STOP = set("for with in and or the a an of from to by vs on at".split())
+def _tokens(s: str) -> List[str]:
+    return [w for w in re.findall(r"[A-Za-z0-9]+", (s or "").lower()) if w not in _STOP]
+
+def is_generic_greeting(q: str) -> bool:
+    s = re.sub(r"[^\w\s]", "", (q or "").lower()).strip()
+    return s in GREETINGS or s.startswith("hello")
+
+def looks_like_sku(q: str) -> bool:
+    return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_]{5,}$", (q or "").strip()))
+
+def looks_like_catalogue_query(q: str) -> bool:
+    if not q: return False
+    ql = q.lower()
+    if looks_like_sku(q): return True
+    toks = _tokens(ql)
+    if not toks: return False
+    if any(w in ql for w in CATALOG_HINT_WORDS): return True
+    if any(t.isdigit() for t in toks) and any(u in ql for u in ("g","kg","gram","grams")): return True
+    return False
+
 def is_analytics_query(q: str) -> bool:
+    if not q: return False
     ql = q.lower()
     if any(w in ql for w in ANALYTICS_WORDS): return True
     if RANGE_PAT.search(ql): return True
@@ -157,10 +190,9 @@ class DataManager:
         log.info(f"[load] total CSVs loaded: {count}")
 
 # -----------------------------
-# Safe table getter (avoids pandas boolean gotcha)
+# Safe table getter
 # -----------------------------
 def safe_get_table(dm: DataManager, *names) -> pd.DataFrame:
-    """Return the first non-empty DataFrame from dm.tables among `names`, else empty DataFrame."""
     for n in names:
         df = dm.tables.get(n)
         if isinstance(df, pd.DataFrame) and not df.empty:
@@ -168,11 +200,12 @@ def safe_get_table(dm: DataManager, *names) -> pd.DataFrame:
     return pd.DataFrame()
 
 # -----------------------------
-# Sales corpus builder (multi-table)
+# Sales corpus builder (multi-table, richer synonyms)
 # -----------------------------
-REV_PAT  = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|sales)", re.I)
-PROD_PAT = re.compile(r"(sku_?description|product|item|desc|name|sku|category)", re.I)
-DATE_PAT = re.compile(r"(order_?date|order_?datetime|date|datetime|timestamp|time)", re.I)
+REV_PAT   = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|line_?total|grand_?total|sales)", re.I)
+PROD_PAT  = re.compile(r"(sku_?description|product|product_?name|item_?name|desc|name|sku|category)", re.I)
+DATE_PAT  = re.compile(r"(order_?date|order_?datetime|purchase_?date|purchased?_?at|date|datetime|timestamp|time|created_?at)", re.I)
+SKU_PAT   = re.compile(r"^(sku|item_?sku|sku_?code|item_?code|product_?code)$", re.I)
 
 def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]] = None) -> Optional[str]:
     if df is None or df.empty: return None
@@ -183,6 +216,12 @@ def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]]
         if regex.search(c): return c
     return None
 
+def _find_sku_col(df: pd.DataFrame) -> Optional[str]:
+    if df is None or df.empty: return None
+    for c in df.columns:
+        if SKU_PAT.match(c): return c
+    return None
+
 def _is_sales_table(name: str, df: pd.DataFrame) -> bool:
     if df is None or df.empty: return False
     name_hit = any(k in name for k in ("sales","ecommerce","orders","transactions","purchases"))
@@ -191,19 +230,24 @@ def _is_sales_table(name: str, df: pd.DataFrame) -> bool:
 
 def _harmonize_sales_table(name: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
     if df is None or df.empty: return None
-    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount"])
+    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount","line_total","grand_total"])
     prod = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","name","desc","sku","category"])
-    dcol = _find_col(df, DATE_PAT, ["order_datetime","order_date","date","datetime","timestamp","time"])
-    if not rev: return None
+    dcol = _find_col(df, DATE_PAT, ["order_datetime","order_date","purchase_date","purchased_at","created_at","date","datetime","timestamp","time"])
+    scol = _find_sku_col(df)
 
+    if not rev: return None
     out = pd.DataFrame()
     out["revenue"] = pd.to_numeric(df[rev], errors="coerce").fillna(0)
 
-    out["sku"] = df["sku"] if "sku" in df.columns else None
+    if scol:
+        out["sku"] = df[scol].astype(str)
+    else:
+        out["sku"] = None
+
     if prod:
         out["product"] = df[prod].astype(str)
     else:
-        out["product"] = out["sku"].astype(str) if "sku" in df.columns else None
+        out["product"] = out["sku"].astype(str) if scol else None
 
     if dcol:
         dt = pd.to_datetime(df[dcol], errors="coerce")
@@ -230,22 +274,23 @@ def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
 
     # Prefer full product names from sku_master.csv
     sm = dm.tables.get("sku_master")
-    if isinstance(sm, pd.DataFrame) and not sm.empty and "sku" in sm.columns:
-        dcol = next((c for c in ("sku_description","product_name","item_name","name","desc") if c in sm.columns), None)
-        if dcol:
-            sm_slice = sm[["sku", dcol]].drop_duplicates("sku")
+    if isinstance(sm, pd.DataFrame) and not sm.empty:
+        sm = _normalize_df(sm)
+        sku_col = _find_sku_col(sm) or ("sku" if "sku" in sm.columns else None)
+        desc_col = next((c for c in ("sku_description","product_name","item_name","name","desc") if c in sm.columns), None)
+        if sku_col and desc_col:
+            sm_slice = sm[[sku_col, desc_col]].drop_duplicates(sku_col)
+            sm_slice.columns = ["sku", "sku_desc"]
             big = big.merge(sm_slice, on="sku", how="left")
-            big["product"] = big["product"].fillna(big[dcol].astype(str))
-            # Replace SKU-like codes with description when available
-            sku_like = big["product"].astype(str).str.match(r"^[A-Za-z0-9\-_]+$")
-            big.loc[sku_like & big[dcol].notna(), "product"] = big.loc[sku_like & big[dcol].notna(), dcol].astype(str)
-            big.drop(columns=[dcol], inplace=True, errors="ignore")
+            # fill/replace product with human-readable description
+            big["product"] = big["product"].where(big["product"].notna() & ~big["product"].str.match(r"^[A-Za-z0-9\-_]+$", na=False), big["sku_desc"])
+            big.drop(columns=["sku_desc"], inplace=True, errors="ignore")
 
     big["product"] = big["product"].fillna(big["sku"].astype(str))
     return big
 
 # -----------------------------
-# Query parsing
+# Period & ranking parsing
 # -----------------------------
 Q_PATTERNS = {
     "q1": re.compile(r"\b(q1|first\s+quarter|quarter\s*1)\b", re.I),
@@ -283,29 +328,24 @@ def parse_top_bottom(q: str) -> Tuple[Optional[str], int]:
     if m_bot: return "bottom", int(m_bot.group(1) or 5)
     return None, 0
 
-# Better product guessing: sku_master first; then sales names; then token-match fallback
-_STOP = set("for with in and or the a an of from to by vs".split())
-def _tokens(s: str) -> List[str]:
-    return [w for w in re.findall(r"[A-Za-z0-9]+", (s or "").lower()) if w not in _STOP]
-
+# -----------------------------
+# Product name guess
+# -----------------------------
 def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Optional[str]:
     candidates: List[str] = []
-    pools: List[Tuple[str, List[str]]] = []
+    pools: List[List[str]] = []
 
     sm = dm.tables.get("sku_master")
     if isinstance(sm, pd.DataFrame) and "sku_description" in sm.columns:
         sdesc = sm["sku_description"].astype(str).dropna().unique().tolist()
-        candidates += sdesc
-        pools.append(("sku_master.sku_description", sdesc))
+        candidates += sdesc; pools.append(sdesc)
 
     if isinstance(sales, pd.DataFrame) and "product" in sales.columns:
         sprod = sales["product"].astype(str).dropna().unique().tolist()
-        candidates += sprod
-        pools.append(("sales.product", sprod))
+        candidates += sprod; pools.append(sprod)
 
     if not candidates: return None
 
-    # 1) fuzzy best
     best, best_score = None, 0
     for cand in candidates:
         s = fuzz.token_set_ratio(q, cand)
@@ -314,10 +354,9 @@ def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Opt
     if best_score >= 70:
         return best
 
-    # 2) token containment fallback (needs >=2 token hits)
     qtok = set(_tokens(q))
     best2, hits2 = None, 0
-    for _, pool in pools:
+    for pool in pools:
         for cand in pool:
             ctok = set(_tokens(cand))
             hits = len(qtok & ctok)
@@ -326,7 +365,7 @@ def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Opt
     return best2
 
 # -----------------------------
-# Customer (FAQ + Catalogue)
+# Customer tools (FAQ only here)
 # -----------------------------
 class CustomerTools:
     def __init__(self, dm: DataManager):
@@ -343,47 +382,8 @@ class CustomerTools:
                 best, score = str(row["answer"]), s
         return best if score >= 75 else ""
 
-    def product_lookup(self, q: str, limit: int = 10) -> str:
-        cands = []
-        for name in ("sku_master","product_inventory","products","catalog"):
-            df = self.dm.tables.get(name)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                cands.append(df)
-        if not cands:
-            for _, df in self.dm.tables.items():
-                if isinstance(df, pd.DataFrame) and any(PROD_PAT.search(c) for c in df.columns):
-                    cands.append(df)
-        if not cands: return ""
-
-        sm = pd.concat(cands, ignore_index=True, sort=False)
-        cols = [c for c in sm.columns if PROD_PAT.search(c)]
-        if not cols: return ""
-
-        mask = pd.Series(False, index=sm.index)
-        for c in cols:
-            mask = mask | sm[c].astype(str).str.contains(q, case=False, na=False)
-        hits = sm.loc[mask].copy()
-
-        if hits.empty and "sku_description" in sm.columns:
-            sm["_score"] = sm["sku_description"].astype(str).apply(lambda s: fuzz.token_set_ratio(s, q))
-            hits = sm.sort_values("_score", ascending=False).head(limit)
-
-        if hits.empty: return ""
-
-        keep = (["sku"] if "sku" in hits.columns else []) + [c for c in ["sku_description","product_name","item_name","name","desc","category"] if c in hits.columns]
-        hits = hits[keep].drop_duplicates().head(limit)
-
-        lines=[]
-        for _, row in hits.iterrows():
-            label = next((str(row[c]).strip() for c in ["sku_description","product_name","item_name","name","desc","category"]
-                          if c in hits.columns and pd.notna(row.get(c)) and str(row.get(c)).strip()), None)
-            if label:
-                prefix = f"{row['sku']} – " if "sku" in hits.columns and pd.notna(row.get("sku")) else ""
-                lines.append(f"- {prefix}{label}")
-        return "Here’s what I found in the catalogue:\n" + "\n".join(lines) if lines else ""
-
 # -----------------------------
-# Data/Analytics (Clarity)
+# Analytics tools (Clarity)
 # -----------------------------
 class AnalyticsTools:
     def __init__(self, dm: DataManager):
@@ -400,12 +400,10 @@ class AnalyticsTools:
     def total(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
         years, y_min, y_max = parse_years(q)
         months, period = parse_period(q)
-
         scope = self._scoped(self.sales, years, months)
         if scope.empty:
             label = (period or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
             return (f"No rows found for{label or ' specified period'}.", years or [], period, None)
-
         total = scope["revenue"].sum()
         suffix=[]
         if period: suffix.append(period)
@@ -424,7 +422,8 @@ class AnalyticsTools:
             label = (period or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
             return (f"No rows found for{label or ' specified period'}.", years or [], period, None)
 
-        agg = scope.groupby("product", dropna=False)["revenue"].sum().sort_values(ascending=False)
+        grp_key = "product" if scope["product"].notna().sum() else ("sku" if "sku" in scope.columns else "product")
+        agg = scope.groupby(grp_key, dropna=False)["revenue"].sum().sort_values(ascending=False)
         sel = agg.head(n) if intent=="top" else agg.tail(n)
         title = f"{intent.capitalize()} {n} products by revenue"
         parts=[]
@@ -440,7 +439,6 @@ class AnalyticsTools:
         years, y_min, y_max = parse_years(q)
         if not years: return None
 
-        # product-specific?
         prod = guess_product(q, dm=self.dm, sales=self.sales)
         scope = self.sales.copy()
         if prod:
@@ -456,7 +454,7 @@ class AnalyticsTools:
         lines = [head] + [f"- {int(y)}: ${v:,.2f}" for y, v in yearly.items()]
         return ("\n".join(lines), years or [], None, prod)
 
-    # Data introspection: “describe column X in Y.csv”
+    # Schema/column description
     def describe_column(self, q: str) -> Optional[str]:
         m = re.search(r"(?:what\s+is|explain|describe)\s+(?:the\s+)?column\s+([a-z0-9_]+)(?:\s+in\s+([a-z0-9_\-\.]+))?", q, re.I)
         if not m:
@@ -507,15 +505,16 @@ class Assistant:
         if not q:
             return "Say something!", ASSISTANT_NAME_CUSTOMER
 
+        if is_generic_greeting(q):
+            return "Hi! How can I help today?", ASSISTANT_NAME_CUSTOMER
+
         if is_analytics_query(q):
-            # 1) Column/schema questions
             desc = self.ana.describe_column(q)
             if desc:
                 if is_complex_query(q):
                     desc += f"\n\nOpen dashboard: {make_dashboard_link(q)}"
                 return desc, ASSISTANT_NAME_STAFF
 
-            # 2) Analytics: trend -> top/bottom -> total
             for handler in (self.ana.trend, self.ana.top_bottom, self.ana.total):
                 res = handler(q)
                 if res:
@@ -524,7 +523,6 @@ class Assistant:
                         text += f"\n\nOpen dashboard: {make_dashboard_link(q, years=years, period=period, product=product)}"
                     return text, ASSISTANT_NAME_STAFF
 
-            # 3) LLM fallback (Clarity tone)
             return call_model([
                 {"role":"system","content":(
                     f"You are Clarity, an internal analytics officer at {COMPANY}. "
@@ -533,33 +531,21 @@ class Assistant:
                 {"role":"user","content": q},
             ]), ASSISTANT_NAME_STAFF
 
-        # Nibbles mode (FAQ -> catalogue -> LLM)
+        # Nibbles mode: FAQ fallback; catalogue suppressed to avoid noise
         faq = self.cust.faq_lookup(q)
         if faq:
             return faq, ASSISTANT_NAME_CUSTOMER
 
-        cat = self.cust.product_lookup(q)
-        if cat:
-            return cat, ASSISTANT_NAME_CUSTOMER
-
-        # LLM fallback (Nibbles tone) using safe table getter (no boolean-or DF)
-        faq_df  = safe_get_table(self.dm, "faqs", "faq").head(10)
-        prod_df = safe_get_table(self.dm, "product_inventory", "sku_master").head(10)
-        faq_examples  = faq_df.to_dict(orient="records") if not faq_df.empty else []
-        prod_examples = prod_df.to_dict(orient="records") if not prod_df.empty else []
-
         return call_model([
             {"role":"system","content":(
                 f"You are Nibbles, a warm and professional Customer Service Officer at {COMPANY}. "
-                "Base answers on FAQ and product catalogue if possible. Keep replies short and friendly. Never mention that you are an AI."
+                "Keep replies short and friendly. Never mention that you are an AI."
             )},
-            {"role":"user","content": f"(FAQ samples) {json.dumps(faq_examples, ensure_ascii=False)}"},
-            {"role":"user","content": f"(Product samples) {json.dumps(prod_examples, ensure_ascii=False)}"},
             {"role":"user","content": q},
         ]), ASSISTANT_NAME_CUSTOMER
 
 # -----------------------------
-# Flask app + Cerulean UI
+# Flask app + Cerulean UI (simple header)
 # -----------------------------
 app = Flask(__name__)
 dm  = DataManager(DATA_DIR)
@@ -569,48 +555,44 @@ INDEX_HTML_TPL = Template("""
 <!doctype html>
 <html>
 <head>
-  <title>Clarity (Unlocked)</title>
+  <title>Clarity</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
   <style>
   :root{ --cerulean:#2a9df4; --cerulean-dark:#1b6fa8; --bg:#f4f9ff; }
   *{box-sizing:border-box}
-  body{background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
+  body{background:var(--bg);font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
   .container{max-width:760px;margin:0 auto;padding:20px}
   .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
-  .header{background:linear-gradient(135deg,var(--cerulean),#9fd3ff);color:#0f2840;padding:20px;text-align:center}
-  .header h1{margin:0 0 6px;font-size:22px}
-  .header p{margin:0;opacity:.85;font-size:13px}
+  .header{background:linear-gradient(135deg,var(--cerulean),#9fd3ff);color:#0f2840;padding:22px 20px;text-align:center}
+  .header h1{margin:0;font-size:22px;letter-spacing:.2px}
   .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#f7fbff}
   .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
   .user{align-self:flex-end;background:var(--cerulean);color:#ffffff}
   .bot{align-self:flex-start;background:#ffffff;color:#1e2a36;border:1px solid #e6f0fb}
-  .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
+  .badge{font-size:11px;font-weight:600;opacity:.85;margin-bottom:4px}
   .composer{display:flex;padding:14px;border-top:1px solid #e6f0fb;background:#fff}
   .input-wrap{flex:1;position:relative}
   textarea{width:100%;border-radius:24px;padding:12px 88px 12px 14px;border:2px solid #e6f0fb;resize:none;font-family:inherit;font-size:14px;outline:none}
   textarea:focus{border-color:var(--cerulean)}
-  button{position:absolute;right:8px;top:50%;;transform:translateY(-50%);background:var(--cerulean);color:#ffffff;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
+  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--cerulean);color:#ffffff;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
   button:hover{background:var(--cerulean-dark)}
   .typing{color:#516579;font-style:italic;align-self:flex-start}
-  .hint{font-size:12px;color:#516579}
   a{color:#1b6fa8}
   </style>
 </head>
 <body>
   <div class="container">
     <div class="widget">
-      <div class="header">
-        <h1>Clarity (Unlocked)</h1>
-        <p>Auto-switches personas: analytics → <b>${STAFF}</b>; everything else → <b>${CUSTOMER}</b>. Reading CSVs from <code>${DATADIR}</code>.</p>
-      </div>
+      <div class="header"><h1>Clarity</h1></div>
       <div id="chat" class="chat">
         <div class="bubble bot">
           <div class="badge">${STAFF} / ${CUSTOMER}</div>
 Hello! Ask me anything.
 • Sales/Data examples: "Sales trend for roasted peanuts from 2022 to 2025", "Top 5 products by revenue in 2024", "Total revenue H1 2023".
-• Customer help: "Do you have honey walnuts 400g?", "Allergen info for peanuts".
+• Customer help: "Allergen info for peanuts".
         </div>
-        <div class="hint">No prefix needed — I’ll pick the right mode automatically.</div>
       </div>
       <div class="composer">
         <div class="input-wrap">
@@ -669,8 +651,7 @@ async function sendMsg(){
 def index():
     return render_template_string(INDEX_HTML_TPL.safe_substitute(
         STAFF=ASSISTANT_NAME_STAFF,
-        CUSTOMER=ASSISTANT_NAME_CUSTOMER,
-        DATADIR=str(DATA_DIR)
+        CUSTOMER=ASSISTANT_NAME_CUSTOMER
     ))
 
 @app.route("/chat", methods=["POST"])
@@ -679,9 +660,11 @@ def chat():
     if not msg:
         return jsonify({"reply": "Say something!", "speaker": ASSISTANT_NAME_CUSTOMER})
     reply, persona = bot.answer(msg)
+    # Mask any accidental brand leakage before returning
+    reply = brand_sanitize(reply)
+    persona = brand_sanitize(persona)
     return jsonify({"reply": reply, "speaker": persona})
 
-# Optional minimal PoC view for the artificial link
 @app.route("/dashboard")
 def dashboard():
     from flask import request as _rq
@@ -690,17 +673,18 @@ def dashboard():
     period = _rq.args.get("period","")
     prod   = _rq.args.get("product","")
     tok    = _rq.args.get("id","")
-    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Clarity Dashboard (PoC)</title>
-    <style>body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f4f9ff;margin:0;padding:24px;color:#0f2840}}
+    html = f"""<!doctype html><html><head><meta charset='utf-8'><title>Clarity Dashboard (PoC)</title>
+    <style>body{{font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f4f9ff;margin:0;padding:24px;color:#0f2840}}
     .card{{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);padding:20px;max-width:960px;margin:0 auto}}
     .pill{{display:inline-block;background:#e6f0fb;color:#1b6fa8;border-radius:999px;padding:6px 10px;margin:4px 6px 0 0;font-size:13px}}</style></head>
     <body><div class="card"><h2>Clarity Dashboard (PoC)</h2>
     <div><b>Request ID:</b> {tok or '(auto)'} </div>
-    <div><b>Query:</b> {q or '(none)'} </div>
+    <div><b>Query:</b> {brand_sanitize(q) or '(none)'} </div>
     <div>{"".join(f"<span class='pill'>Year: {y}</span>" for y in years.split(",") if y)}</div>
-    <div>{("<span class='pill'>Period: "+period+"</span>" if period else "")}{(" <span class='pill'>Product: "+prod+"</span>" if prod else "")}</div>
+    <div>{("<span class='pill'>Period: "+period+"</span>" if period else "")}{(" <span class='pill'>Product: "+brand_sanitize(prod)+"</span>" if prod else "")}</div>
     <p style="color:#51708d">This is a placeholder for demo links. No charts are rendered.</p></div></body></html>"""
+    return html
 
 if __name__ == "__main__":
-    print(f"🚀 Starting server on http://127.0.0.1:5000/ (cerulean theme, auto persona, DATA_DIR={DATA_DIR})")
+    print(f"🚀 Clarity running at http://127.0.0.1:5000/  (DATA_DIR={DATA_DIR}, COMPANY={COMPANY})")
     app.run(host="127.0.0.1", port=5000)
