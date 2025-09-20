@@ -1,18 +1,20 @@
 # Clarity.py
-# Clarity (staff) – Internal analytics assistant for Cashew4Nuts
+# Clarity (staff) – Unlocked internal assistant for Cashew4Nuts
 # - Loads ALL CSVs in DATA_DIR
-# - Auto-detects & combines sales-like tables into one corpus
-# - Joins sku_master to show human-readable product names
-# - Answers: top/bottom N by period, totals, product trends, quarters/halves, year ranges
-# - Adds a PoC dashboard link for complex insights
-# - Cerulean UI + /health + /dashboard
+# - Analytics: top/bottom N, totals, quarters/halves, year ranges, product trends
+# - FAQ + catalogue lookup locally (faqs.csv, sku_master.csv, etc.)
+# - Optional LLM fallback (only if API_URL & API_KEY are set)
+# - Complex-insight dashboard link + /dashboard PoC
+# - Cerulean UI + /health diagnostics
+#
+# Env:
+#   DATA_DIR, CLARITY_PORT (or PORT), API_URL, API_KEY, MODEL, DASHBOARD_BASE_URL
 
 import os, re, subprocess, sys, logging, json, uuid
 from urllib.parse import urlencode, quote_plus
 from pathlib import Path
 from string import Template
 from typing import Dict, List, Optional, Tuple
-from dotenv import load_dotenv, find_dotenv
 
 # -----------------------------
 # Logging
@@ -42,15 +44,19 @@ import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
 from fuzzywuzzy import fuzz
 import requests
+from dotenv import load_dotenv
 
 # -----------------------------
-# Load env (robust)
+# Load .env (version-proof, no find_dotenv)
 # -----------------------------
-load_dotenv(find_dotenv(suppress_errors=True), override=False)
+_env_here = Path(__file__).with_name(".env")
+if _env_here.exists():
+    load_dotenv(dotenv_path=str(_env_here), override=False)
+else:
+    load_dotenv(override=False)
 
 def _sanitize_path(p: str) -> str:
-    if not p:
-        return ""
+    if not p: return ""
     p = p.strip().strip('"').strip("'")
     p = os.path.expandvars(p)
     p = os.path.expanduser(p)
@@ -64,8 +70,8 @@ DATA_DIR = Path(_sanitize_path(_raw_dir))
 PORT     = int(os.getenv("CLARITY_PORT", os.getenv("PORT", "5002")))
 DASHBOARD_BASE_URL = (os.getenv("DASHBOARD_BASE_URL") or f"http://127.0.0.1:{PORT}/dashboard").strip()
 
-ASSISTANT_NAME_STAFF = "Clarity"
-COMPANY_NAME = "Cashew4Nuts"
+ASSISTANT_NAME = "Clarity"
+COMPANY_NAME   = "Cashew4Nuts"
 
 log.info(f"[env] DATA_DIR raw='{_raw_dir}' -> resolved='{DATA_DIR}'  exists={DATA_DIR.exists()}")
 
@@ -119,11 +125,11 @@ class DataManager:
         log.info(f"[load] total CSVs loaded: {count}")
 
 # -----------------------------
-# Model caller (plain text only)
+# Model caller (only if configured)
 # -----------------------------
-def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
+def call_model(messages: List[Dict[str, str]], max_tokens=512) -> Optional[str]:
     if not API_KEY or not API_URL:
-        return "API not configured. Please check your .env file."
+        return None
     try:
         messages = [{"role": "system", "content":
                      "Always answer in plain text only. "
@@ -139,13 +145,13 @@ def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
         return reply
     except Exception as e:
         log.error(f"[api] error: {e}")
-        return "Sorry, I couldn’t connect to the assistant API."
+        return None
 
 # -----------------------------
 # Sales corpus builder (multi-table)
 # -----------------------------
 REV_PAT  = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|sales)", re.I)
-PROD_PAT = re.compile(r"(sku_?description|product|item|desc|name|sku)", re.I)
+PROD_PAT = re.compile(r"(sku_?description|product|item|desc|name|sku|category)", re.I)
 DATE_PAT = re.compile(r"(order_?date|order_?datetime|date|datetime|timestamp|time)", re.I)
 
 def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]] = None) -> Optional[str]:
@@ -204,7 +210,7 @@ def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
     # join names
     sku_master = dm.tables.get("sku_master")
     if isinstance(sku_master, pd.DataFrame) and not sku_master.empty and "sku" in sku_master.columns:
-        desc_col = next((c for c in ("sku_description","product_name","item_name") if c in sku_master.columns), None)
+        desc_col = next((c for c in ("sku_description","product_name","item_name","name","desc") if c in sku_master.columns), None)
         if desc_col:
             sku_slice = sku_master[["sku", desc_col]].drop_duplicates("sku")
             big = big.merge(sku_slice, on="sku", how="left")
@@ -273,22 +279,19 @@ def guess_product_from_query(q: str, dm: DataManager) -> Optional[str]:
     return None
 
 # -----------------------------
-# "Complex insights" heuristics + dashboard link
+# Complex-insight heuristics + dashboard link
 # -----------------------------
 COMPLEX_KEYWORDS = (
     "dashboard", "cohort", "retention", "churn", "attribution", "forecast",
     "segmentation", "segment", "funnel", "conversion", "ltv", "roi", "roas",
     "basket", "association", "correlation", "seasonality", "driver", "regression"
 )
-
 def is_complex_query(q: str) -> bool:
     ql = q.lower()
     if any(k in ql for k in COMPLEX_KEYWORDS):
         return True
-    # multiple dimensions like "sales by product by channel by month"
     if ql.count(" by ") >= 2 or ql.count(" vs ") >= 1 or ql.count(" and ") >= 3:
         return True
-    # long analytical prompts
     if len(q) > 140:
         return True
     return False
@@ -298,25 +301,97 @@ def make_dashboard_link(query: str,
                         period_label: Optional[str] = None,
                         product: Optional[str] = None) -> str:
     token = uuid.uuid4().hex[:8]
-    params = {
-        "id": token,
-        "q": query,
-    }
+    params = {"id": token, "q": query}
     if years: params["years"] = ",".join(map(str, sorted(set(years))))
     if period_label: params["period"] = period_label
     if product: params["product"] = product
     return f"{DASHBOARD_BASE_URL}?{urlencode(params, quote_via=quote_plus)}"
 
 # -----------------------------
-# Staff Assistant
+# Staff (unlocked) Assistant
 # -----------------------------
-class StaffAnalytics:
+class Assistant:
     def __init__(self, dm: DataManager):
         self.dm = dm
         self.sales_df = build_sales_corpus(dm)
         log.info(f"[sales] combined corpus shape: {self.sales_df.shape}")
 
-    # Generic filter by years / months
+    # ----- FAQ / Catalogue (local) -----
+    def _faq_lookup(self, q: str) -> Optional[str]:
+        faq = self.dm.tables.get("faqs") or self.dm.tables.get("faq")
+        if not isinstance(faq, pd.DataFrame) or faq.empty:
+            return None
+        if not {"question","answer"} <= set(faq.columns):
+            return None
+        best, score = None, 0
+        for _, row in faq.iterrows():
+            s = fuzz.token_set_ratio(str(row["question"]), q)
+            if s > score:
+                best, score = str(row["answer"]), s
+        return best if score >= 75 else None
+
+    def _catalog_lookup(self, q: str, limit: int = 10) -> Optional[str]:
+        q = (q or "").strip()
+        if not q:
+            return None
+
+        candidates = []
+        for name in ("sku_master","product_inventory","products","catalog"):
+            df = self.dm.tables.get(name)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                candidates.append(df)
+        if not candidates:
+            for name, df in self.dm.tables.items():
+                if not isinstance(df, pd.DataFrame) or df.empty:
+                    continue
+                if any(re.search(r"(sku_?description|product|item|desc|name|category)", c, re.I) for c in df.columns):
+                    candidates.append(df)
+        if not candidates:
+            return None
+
+        sm = pd.concat(candidates, ignore_index=True, sort=False)
+        text_cols = [c for c in sm.columns if re.search(r"(sku_?description|product|item|desc|name|category)", c, re.I)]
+        if not text_cols:
+            return None
+
+        mask = False
+        for c in text_cols:
+            mask = (mask | sm[c].astype(str).str.contains(q, case=False, na=False))
+        hits = sm.loc[mask].copy()
+        keep_cols = (["sku"] if "sku" in sm.columns else []) + text_cols
+        hits = hits[keep_cols].drop_duplicates().head(limit) if not hits.empty else pd.DataFrame()
+
+        if hits.empty and "sku_description" in sm.columns:
+            sm["_score"] = sm["sku_description"].astype(str).apply(lambda s: fuzz.token_set_ratio(s, q))
+            hits = sm.sort_values("_score", ascending=False).head(limit)
+            keep_cols = (["sku"] if "sku" in hits.columns else []) + [c for c in ["sku_description","product_name","item_name","name","desc","category"] if c in hits.columns]
+            hits = hits[keep_cols].drop_duplicates()
+
+        if hits.empty:
+            return None
+
+        lines = []
+        for _, row in hits.iterrows():
+            label = None
+            for c in ["sku_description","product_name","item_name","name","desc","category"]:
+                if c in hits.columns and pd.notna(row.get(c)) and str(row.get(c)).strip():
+                    label = str(row[c]).strip()
+                    break
+            if not label:
+                for c in text_cols:
+                    if pd.notna(row.get(c)) and str(row.get(c)).strip():
+                        label = str(row[c]).strip()
+                        break
+            if not label:
+                continue
+            prefix = f"{row['sku']} – " if "sku" in hits.columns and pd.notna(row.get('sku')) else ""
+            lines.append(f"- {prefix}{label}")
+            if len(lines) >= limit:
+                break
+
+        return "Here’s what I found in the catalogue:\n" + "\n".join(lines) if lines else None
+
+    # ----- Period filters -----
     def _filter_period(self, df: pd.DataFrame, years: Optional[List[int]], months: Optional[List[int]]) -> pd.DataFrame:
         out = df
         if years:
@@ -325,6 +400,7 @@ class StaffAnalytics:
             out = out[out["month"].isin(months)]
         return out
 
+    # ----- Analytics handlers -----
     def _top_bottom(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
         intent, n = parse_top_bottom(q)
         if not intent or not n:
@@ -362,7 +438,6 @@ class StaffAnalytics:
             return None
         product = guess_product_from_query(q, self.dm)
         if not product:
-            # fallback: try substring match over products present
             products = self.sales_df["product"].dropna().unique().tolist()
             cand = next((p for p in products if p and p.lower() in q.lower()), None)
             product = cand or None
@@ -400,50 +475,54 @@ class StaffAnalytics:
         tail = f" ({', '.join(suffix)})" if suffix else ""
         return (f"Total revenue{tail}: ${total:,.2f}", years or [], period_label, None)
 
+    # ----- Orchestrator (unlocked) -----
     def answer(self, q: str) -> str:
         q = q.strip()
 
-        # Route analytics-y intent
-        if any(k in q.lower() for k in ["top", "bottom", "trend", "quarter", "q1", "q2", "q3", "q4", "half", "h1", "h2", "202", "201", "20"]):
+        # 1) Analytics routes (no prefix needed)
+        if any(k in q.lower() for k in ["top","bottom","trend","quarter","q1","q2","q3","q4","half","h1","h2","202","201","20","revenue","sales"]):
             for handler in (self._trend, self._top_bottom, self._total_or_generic):
                 res = handler(q)
                 if res:
                     text, years, period_label, product = res
-                    # Add dashboard link for complex requests
                     if is_complex_query(q):
                         link = make_dashboard_link(q, years=years, period_label=period_label, product=product)
                         text = f"{text}\n\nOpen dashboard: {link}"
                     return text
 
-            # if we reach here and corpus is empty
-            if self.sales_df.empty:
-                loaded = ", ".join(sorted(self.dm.tables.keys()))
-                return ("No sales data found.\n"
-                        f"Loaded tables: {loaded or '(none)'}\n"
-                        "Expected a file with a revenue column (e.g., sales_transactions.csv).")
-            return "I couldn’t parse the request. Try: “Top 5 products by revenue 2024” or “Trend for <product> from 2022 to 2025”."
+        # 2) FAQ (local)
+        faq = self._faq_lookup(q)
+        if faq:
+            return faq
 
-        # Non-analytics → model
-        return call_model([
+        # 3) Catalogue / products (local)
+        catalog = self._catalog_lookup(q)
+        if catalog:
+            return catalog
+
+        # 4) LLM fallback only if API configured; else a polite local message
+        reply = call_model([
             {"role": "system", "content": (
-                f"You are Clarity, an internal staff analytics officer at {COMPANY_NAME}. "
+                f"You are Clarity, an internal assistant at {COMPANY_NAME}. "
                 "Use the CSV data for analysis when possible. "
                 "If the query is outside the data scope, answer helpfully but concisely. "
                 "Do not use markdown or formatting."
             )},
             {"role": "user", "content": q},
         ])
+        if reply is not None:
+            return reply
+        return "I can help with analytics (top/bottom, quarters/halves, trends) or product/FAQ lookups from our CSVs. Try something like “Top 5 products by revenue 2024” or “What roasted peanuts do we have?”"
 
 # -----------------------------
 # Flask App + Cerulean UI
 # -----------------------------
 app = Flask(__name__)
-
 INDEX_HTML_TPL = Template("""
 <!doctype html>
 <html>
 <head>
-  <title>${STAFF}</title>
+  <title>${NAME}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
   :root{ --cerulean:#2a9df4; --cerulean-dark:#1b6fa8; --bg:#f4f9ff; }
@@ -467,24 +546,22 @@ INDEX_HTML_TPL = Template("""
   button:hover{background:var(--cerulean-dark)}
   .typing{color:#516579;font-style:italic;align-self:flex-start}
   .hint{font-size:12px;color:#516579;margin-top:6px}
+  a{color:#1b6fa8}
   </style>
 </head>
 <body>
   <div class="container">
     <div class="widget">
       <div class="header">
-        <h1>${STAFF}</h1>
-        <p>${STAFF} provides sales summaries from CSVs for Cashew4Nuts. Try: "Top 5 products by revenue 2024".</p>
+        <h1>${NAME}</h1>
+        <p>Unlocked: analytics + product/FAQ from CSVs. Try: "Top 5 products by revenue 2024", "What roasted peanuts do we have?", or "Trend for Satay Broad Beans Snacks 36g from 2022 to 2025".</p>
       </div>
       <div id="chat" class="chat">
         <div class="bubble bot">
-          <div class="badge">${STAFF}</div>
-Hello! I’m ${STAFF} from Cashew4Nuts. Ask things like:
-• “Top 5 products by revenue 2024”
-• “Bottom 3 by revenue H1 2023”
-• “Trend for Satay Broad Beans Snacks 36g from 2022 to 2025”
+          <div class="badge">${NAME}</div>
+Hello! I’m ${NAME} from Cashew4Nuts. Ask analytics (top/bottom, quarters/halves, trends) or product/FAQ questions. For complex asks, I’ll add a dashboard link.
         </div>
-        <div class="hint">Tip: Include a year/quarter/half for precise results. For complex insights, I’ll also generate a dashboard link.</div>
+        <div class="hint">URLs become clickable automatically.</div>
       </div>
       <div class="composer">
         <div class="input-wrap">
@@ -502,14 +579,12 @@ document.getElementById('msg').addEventListener('input', function(){ autoResize(
 
 function escapeHtml(str){
   return str.replace(/[&<>'"]/g, function(tag){
-    const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', \"'\": '&#39;', '\"': '&quot;' };
+    const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
     return chars[tag] || tag;
   });
 }
-
-// Make plain URLs clickable after escaping (PoC)
 function linkify(el){
-  el.innerHTML = el.innerHTML.replace(/(https?:\\/\\/[^\\s]+)/g, '<a href=\"$1\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>');
+  el.innerHTML = el.innerHTML.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
 }
 
 async function sendMsg(){
@@ -517,7 +592,7 @@ async function sendMsg(){
   const text=box.value.trim();
   if(!text) return;
   const chat=document.getElementById('chat');
-  chat.insertAdjacentHTML('beforeend','<div class=\"bubble user\">'+escapeHtml(text)+'</div>');
+  chat.insertAdjacentHTML('beforeend','<div class="bubble user">'+escapeHtml(text)+'</div>');
   box.value=''; autoResize(box); chat.scrollTop=chat.scrollHeight;
 
   const typing=document.createElement('div');
@@ -528,11 +603,10 @@ async function sendMsg(){
   let data = await resp.json();
   chat.removeChild(typing);
 
-  const speaker = escapeHtml(data.speaker || '${STAFF}');
+  const speaker = escapeHtml(data.speaker || '${NAME}');
   const reply   = escapeHtml(data.reply || '');
-  const html = '<div class=\"bubble bot\"><div class=\"badge\">'+speaker+'</div>'+reply+'</div>';
+  const html = '<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>';
   chat.insertAdjacentHTML('beforeend', html);
-  // linkify the last bot bubble
   const bubbles = chat.getElementsByClassName('bubble');
   linkify(bubbles[bubbles.length-1]);
   chat.scrollTop=chat.scrollHeight;
@@ -543,11 +617,12 @@ async function sendMsg(){
 """)
 
 dm = DataManager(DATA_DIR)
-staff = StaffAnalytics(dm)
+assistant = Assistant(dm)
+app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML_TPL.safe_substitute(STAFF=ASSISTANT_NAME_STAFF))
+    return render_template_string(INDEX_HTML_TPL.safe_substitute(NAME=ASSISTANT_NAME))
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -561,7 +636,6 @@ def health():
 
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
-    # Simple PoC dashboard page that echoes the requested filters
     q = request.args.get("q", "")
     years = request.args.get("years", "")
     period = request.args.get("period", "")
@@ -597,9 +671,9 @@ def dashboard():
 @app.route("/chat", methods=["POST"])
 def chat():
     msg = (request.json.get("message") or "").strip()
-    reply = staff.answer(msg) if msg else "Say something!"
+    reply = assistant.answer(msg) if msg else "Say something!"
     reply = brand_sanitize(reply)
-    return jsonify({"reply": reply, "speaker": ASSISTANT_NAME_STAFF})
+    return jsonify({"reply": reply, "speaker": ASSISTANT_NAME})
 
 if __name__ == "__main__":
     print(f"🚀 Clarity running at http://127.0.0.1:{PORT}/  (DATA_DIR={DATA_DIR})")
