@@ -4,10 +4,11 @@
 # - Auto-detects & combines sales-like tables into one corpus
 # - Joins sku_master to show human-readable product names
 # - Answers: top/bottom N by period, totals, product trends, quarters/halves, year ranges
-# - Falls back to model for non-analytics queries
-# - Cerulean UI + /health diagnostics
+# - Adds a PoC dashboard link for complex insights
+# - Cerulean UI + /health + /dashboard
 
-import os, re, subprocess, sys, logging, json
+import os, re, subprocess, sys, logging, json, uuid
+from urllib.parse import urlencode, quote_plus
 from pathlib import Path
 from string import Template
 from typing import Dict, List, Optional, Tuple
@@ -34,7 +35,7 @@ def ensure_deps():
         except ImportError:
             missing.append(pkg)
     if missing:
-        subprocess.check_call([sys.executable, "-m", "pip", "pip", "install", *missing])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
 ensure_deps()
 
 import pandas as pd
@@ -61,6 +62,7 @@ MODEL    = (os.getenv("MODEL") or "openai/gpt-oss-120b").strip()
 _raw_dir = os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data")
 DATA_DIR = Path(_sanitize_path(_raw_dir))
 PORT     = int(os.getenv("CLARITY_PORT", os.getenv("PORT", "5002")))
+DASHBOARD_BASE_URL = (os.getenv("DASHBOARD_BASE_URL") or f"http://127.0.0.1:{PORT}/dashboard").strip()
 
 ASSISTANT_NAME_STAFF = "Clarity"
 COMPANY_NAME = "Cashew4Nuts"
@@ -143,4 +145,462 @@ def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
 # Sales corpus builder (multi-table)
 # -----------------------------
 REV_PAT  = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|sales)", re.I)
-PROD_PAT = re.compile(r"(sku_?description|product|item|desc|name|sku
+PROD_PAT = re.compile(r"(sku_?description|product|item|desc|name|sku)", re.I)
+DATE_PAT = re.compile(r"(order_?date|order_?datetime|date|datetime|timestamp|time)", re.I)
+
+def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]] = None) -> Optional[str]:
+    if df is None or df.empty: return None
+    if priority:
+        for c in priority:
+            if c in df.columns: return c
+    return next((c for c in df.columns if regex.search(c)), None)
+
+def _is_sales_table(name: str, df: pd.DataFrame) -> bool:
+    if df is None or df.empty: return False
+    name_hit = any(k in name for k in ["sales", "ecommerce", "orders", "transactions", "purchases"])
+    col_hit  = any(REV_PAT.search(c) for c in df.columns)
+    return name_hit or col_hit
+
+def _harmonize_sales_table(name: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if df is None or df.empty: return None
+    rev_col  = _find_col(df, REV_PAT, ["line_net_sales_sgd","net_sales_sgd","net_sales","sales_amount","revenue","total_amount","amount"])
+    prod_col = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","desc","name","sku"])
+    date_col = _find_col(df, DATE_PAT, ["order_date","order_datetime","date","datetime","timestamp","time"])
+    if not rev_col: return None
+
+    out = pd.DataFrame()
+    out["revenue"] = pd.to_numeric(df[rev_col], errors="coerce").fillna(0)
+
+    out["sku"] = df[prod_col] if prod_col == "sku" else df.get("sku")
+    if prod_col and prod_col != "sku":
+        out["product"] = df[prod_col].astype(str)
+    else:
+        out["product"] = None
+
+    if date_col:
+        out["date"] = pd.to_datetime(df[date_col], errors="coerce")
+        out["year"] = out["date"].dt.year
+        out["month"] = out["date"].dt.month
+    else:
+        out["date"] = pd.NaT
+        out["year"] = None
+        out["month"] = None
+
+    out["source"] = name
+    return out
+
+def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
+    frames = []
+    for name, df in dm.tables.items():
+        if _is_sales_table(name, df):
+            h = _harmonize_sales_table(name, df)
+            if h is not None and not h.empty:
+                frames.append(h)
+                log.info(f"[sales] included '{name}' -> {h.shape}")
+    if not frames:
+        log.warning("[sales] No sales-like tables detected.")
+        return pd.DataFrame(columns=["revenue","product","sku","date","year","month","source"])
+    big = pd.concat(frames, axis=0, ignore_index=True)
+    # join names
+    sku_master = dm.tables.get("sku_master")
+    if isinstance(sku_master, pd.DataFrame) and not sku_master.empty and "sku" in sku_master.columns:
+        desc_col = next((c for c in ("sku_description","product_name","item_name") if c in sku_master.columns), None)
+        if desc_col:
+            sku_slice = sku_master[["sku", desc_col]].drop_duplicates("sku")
+            big = big.merge(sku_slice, on="sku", how="left")
+            big["product"] = big["product"].fillna(big[desc_col].astype(str))
+            big.drop(columns=[desc_col], inplace=True)
+    big["product"] = big["product"].fillna(big["sku"].astype(str))
+    return big
+
+# -----------------------------
+# Query parsing helpers
+# -----------------------------
+Q_PATTERNS = {
+    "q1": re.compile(r"\b(q1|first\s+quarter|quarter\s*1)\b", re.I),
+    "q2": re.compile(r"\b(q2|second\s+quarter|quarter\s*2)\b", re.I),
+    "q3": re.compile(r"\b(q3|third\s+quarter|quarter\s*3)\b", re.I),
+    "q4": re.compile(r"\b(q4|fourth\s+quarter|quarter\s*4)\b", re.I),
+}
+H_PATTERNS = {
+    "h1": re.compile(r"\b(h1|first\s+half|jan(?:uary)?\s*-\s*jun(?:e)?)\b", re.I),
+    "h2": re.compile(r"\b(h2|second\s+half|jul(?:y)?\s*-\s*dec(?:ember)?)\b", re.I),
+}
+
+def parse_years(q: str) -> Tuple[Optional[List[int]], Optional[int], Optional[int]]:
+    years = [int(y) for y in re.findall(r"\b(20\d{2})\b", q)]
+    if not years:
+        return None, None, None
+    m = re.search(r"\bfrom\s+(20\d{2})\s+(?:to|-|–)\s+(20\d{2})\b", q, re.I)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b: a, b = b, a
+        return list(range(a, b+1)), a, b
+    return years, min(years), max(years)
+
+def parse_quarter_half(q: str) -> Tuple[Optional[List[int]], Optional[str]]:
+    for label, pat in Q_PATTERNS.items():
+        if pat.search(q):
+            months = {"q1":[1,2,3], "q2":[4,5,6], "q3":[7,8,9], "q4":[10,11,12]}[label]
+            return months, label.upper()
+    for label, pat in H_PATTERNS.items():
+        if pat.search(q):
+            months = {"h1":[1,2,3,4,5,6], "h2":[7,8,9,10,11,12]}[label]
+            return months, label.upper()
+    return None, None
+
+def parse_top_bottom(q: str) -> Tuple[Optional[str], Optional[int]]:
+    m_top = re.search(r"\btop\s+(\d+)\b", q, re.I)
+    if m_top: return "top", int(m_top.group(1))
+    m_bot = re.search(r"\bbottom\s+(\d+)\b", q, re.I)
+    if m_bot: return "bottom", int(m_bot.group(1))
+    return None, None
+
+def is_trend_query(q: str) -> bool:
+    return bool(re.search(r"\btrend|from\s+20\d{2}\s+(?:to|-|–)\s+20\d{2}", q, re.I))
+
+def guess_product_from_query(q: str, dm: DataManager) -> Optional[str]:
+    sku_master = dm.tables.get("sku_master")
+    if isinstance(sku_master, pd.DataFrame) and "sku_description" in sku_master.columns:
+        candidates = sku_master["sku_description"].astype(str).dropna().unique().tolist()
+        best, best_score = None, 0
+        for cand in candidates:
+            s = fuzz.token_set_ratio(q, cand)
+            if s > best_score:
+                best, best_score = cand, s
+        if best and best_score >= 70:
+            return best
+    return None
+
+# -----------------------------
+# "Complex insights" heuristics + dashboard link
+# -----------------------------
+COMPLEX_KEYWORDS = (
+    "dashboard", "cohort", "retention", "churn", "attribution", "forecast",
+    "segmentation", "segment", "funnel", "conversion", "ltv", "roi", "roas",
+    "basket", "association", "correlation", "seasonality", "driver", "regression"
+)
+
+def is_complex_query(q: str) -> bool:
+    ql = q.lower()
+    if any(k in ql for k in COMPLEX_KEYWORDS):
+        return True
+    # multiple dimensions like "sales by product by channel by month"
+    if ql.count(" by ") >= 2 or ql.count(" vs ") >= 1 or ql.count(" and ") >= 3:
+        return True
+    # long analytical prompts
+    if len(q) > 140:
+        return True
+    return False
+
+def make_dashboard_link(query: str,
+                        years: Optional[List[int]] = None,
+                        period_label: Optional[str] = None,
+                        product: Optional[str] = None) -> str:
+    token = uuid.uuid4().hex[:8]
+    params = {
+        "id": token,
+        "q": query,
+    }
+    if years: params["years"] = ",".join(map(str, sorted(set(years))))
+    if period_label: params["period"] = period_label
+    if product: params["product"] = product
+    return f"{DASHBOARD_BASE_URL}?{urlencode(params, quote_via=quote_plus)}"
+
+# -----------------------------
+# Staff Assistant
+# -----------------------------
+class StaffAnalytics:
+    def __init__(self, dm: DataManager):
+        self.dm = dm
+        self.sales_df = build_sales_corpus(dm)
+        log.info(f"[sales] combined corpus shape: {self.sales_df.shape}")
+
+    # Generic filter by years / months
+    def _filter_period(self, df: pd.DataFrame, years: Optional[List[int]], months: Optional[List[int]]) -> pd.DataFrame:
+        out = df
+        if years:
+            out = out[out["year"].isin(years)]
+        if months:
+            out = out[out["month"].isin(months)]
+        return out
+
+    def _top_bottom(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
+        intent, n = parse_top_bottom(q)
+        if not intent or not n:
+            return None
+        years, y_min, y_max = parse_years(q)
+        months, period_label = parse_quarter_half(q)
+
+        scope = self._filter_period(self.sales_df, years, months)
+        if scope.empty:
+            label = (period_label or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
+            return (f"No rows found for{label or ' specified period'}.", years or [], period_label, None)
+
+        agg = scope.groupby("product", dropna=False)["revenue"].sum().sort_values(ascending=False)
+        if intent == "top":
+            sel = agg.head(n)
+            title = f"Top {n} products by revenue"
+        else:
+            sel = agg.tail(n)
+            title = f"Bottom {n} products by revenue"
+
+        suffix = []
+        if period_label: suffix.append(period_label)
+        if years:
+            suffix.append(str(y_min) if y_min==y_max else f"{y_min}-{y_max}")
+        tail = f" ({', '.join(suffix)})" if suffix else ""
+        lines = [f"{title}{tail}:"]
+        lines += [f"- {p}: ${v:,.2f}" for p, v in sel.items()]
+        return ("\n".join(lines), years or [], period_label, None)
+
+    def _trend(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
+        if not is_trend_query(q):
+            return None
+        years, y_min, y_max = parse_years(q)
+        if not years:
+            return None
+        product = guess_product_from_query(q, self.dm)
+        if not product:
+            # fallback: try substring match over products present
+            products = self.sales_df["product"].dropna().unique().tolist()
+            cand = next((p for p in products if p and p.lower() in q.lower()), None)
+            product = cand or None
+        if not product:
+            return ("I couldn’t identify the product name in your question.", years or [], None, None)
+
+        scope = self.sales_df[self.sales_df["product"].astype(str).str.contains(re.escape(product), case=False, na=False)]
+        if scope.empty:
+            return (f"No rows found for product '{product}'.", years or [], None, product)
+
+        scope = self._filter_period(scope, years, None)
+        if scope.empty:
+            return (f"No rows found for '{product}' in {y_min}-{y_max}.", years or [], None, product)
+
+        yearly = scope.groupby("year", dropna=False)["revenue"].sum().sort_index()
+        lines = [f"Revenue trend for {product} ({y_min}-{y_max}):"]
+        for y, v in yearly.items():
+            lines.append(f"- {y}: ${v:,.2f}")
+        return ("\n".join(lines), years or [], None, product)
+
+    def _total_or_generic(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
+        years, y_min, y_max = parse_years(q)
+        months, period_label = parse_quarter_half(q)
+        if not years and not months:
+            return None
+        scope = self._filter_period(self.sales_df, years, months)
+        if scope.empty:
+            label = (period_label or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
+            return (f"No rows found for{label or ' specified period'}.", years or [], period_label, None)
+        total = scope["revenue"].sum()
+        suffix = []
+        if period_label: suffix.append(period_label)
+        if years:
+            suffix.append(str(y_min) if y_min==y_max else f"{y_min}-{y_max}")
+        tail = f" ({', '.join(suffix)})" if suffix else ""
+        return (f"Total revenue{tail}: ${total:,.2f}", years or [], period_label, None)
+
+    def answer(self, q: str) -> str:
+        q = q.strip()
+
+        # Route analytics-y intent
+        if any(k in q.lower() for k in ["top", "bottom", "trend", "quarter", "q1", "q2", "q3", "q4", "half", "h1", "h2", "202", "201", "20"]):
+            for handler in (self._trend, self._top_bottom, self._total_or_generic):
+                res = handler(q)
+                if res:
+                    text, years, period_label, product = res
+                    # Add dashboard link for complex requests
+                    if is_complex_query(q):
+                        link = make_dashboard_link(q, years=years, period_label=period_label, product=product)
+                        text = f"{text}\n\nOpen dashboard: {link}"
+                    return text
+
+            # if we reach here and corpus is empty
+            if self.sales_df.empty:
+                loaded = ", ".join(sorted(self.dm.tables.keys()))
+                return ("No sales data found.\n"
+                        f"Loaded tables: {loaded or '(none)'}\n"
+                        "Expected a file with a revenue column (e.g., sales_transactions.csv).")
+            return "I couldn’t parse the request. Try: “Top 5 products by revenue 2024” or “Trend for <product> from 2022 to 2025”."
+
+        # Non-analytics → model
+        return call_model([
+            {"role": "system", "content": (
+                f"You are Clarity, an internal staff analytics officer at {COMPANY_NAME}. "
+                "Use the CSV data for analysis when possible. "
+                "If the query is outside the data scope, answer helpfully but concisely. "
+                "Do not use markdown or formatting."
+            )},
+            {"role": "user", "content": q},
+        ])
+
+# -----------------------------
+# Flask App + Cerulean UI
+# -----------------------------
+app = Flask(__name__)
+
+INDEX_HTML_TPL = Template("""
+<!doctype html>
+<html>
+<head>
+  <title>${STAFF}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+  :root{ --cerulean:#2a9df4; --cerulean-dark:#1b6fa8; --bg:#f4f9ff; }
+  *{box-sizing:border-box}
+  body{background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
+  .container{max-width:720px;margin:0 auto;padding:20px}
+  .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
+  .header{background:linear-gradient(135deg,var(--cerulean),#9fd3ff);color:#0f2840;padding:20px;text-align:center}
+  .header h1{margin:0 0 6px;font-size:22px}
+  .header p{margin:0;opacity:.85;font-size:13px}
+  .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#f7fbff}
+  .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
+  .user{align-self:flex-end;background:var(--cerulean);color:#ffffff}
+  .bot{align-self:flex-start;background:#ffffff;color:#1e2a36;border:1px solid #e6f0fb}
+  .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
+  .composer{display:flex;padding:14px;border-top:1px solid #e6f0fb;background:#fff}
+  .input-wrap{flex:1;position:relative}
+  textarea{width:100%;border-radius:24px;padding:12px 88px 12px 14px;border:2px solid #e6f0fb;resize:none;font-family:inherit;font-size:14px;outline:none}
+  textarea:focus{border-color:var(--cerulean)}
+  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--cerulean);color:#ffffff;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
+  button:hover{background:var(--cerulean-dark)}
+  .typing{color:#516579;font-style:italic;align-self:flex-start}
+  .hint{font-size:12px;color:#516579;margin-top:6px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="widget">
+      <div class="header">
+        <h1>${STAFF}</h1>
+        <p>${STAFF} provides sales summaries from CSVs for Cashew4Nuts. Try: "Top 5 products by revenue 2024".</p>
+      </div>
+      <div id="chat" class="chat">
+        <div class="bubble bot">
+          <div class="badge">${STAFF}</div>
+Hello! I’m ${STAFF} from Cashew4Nuts. Ask things like:
+• “Top 5 products by revenue 2024”
+• “Bottom 3 by revenue H1 2023”
+• “Trend for Satay Broad Beans Snacks 36g from 2022 to 2025”
+        </div>
+        <div class="hint">Tip: Include a year/quarter/half for precise results. For complex insights, I’ll also generate a dashboard link.</div>
+      </div>
+      <div class="composer">
+        <div class="input-wrap">
+          <textarea id="msg" rows="1" placeholder="Type your message…" onkeydown="handleEnter(event)"></textarea>
+          <button onclick="sendMsg()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+function handleEnter(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); } }
+function autoResize(el){ el.style.height='auto'; el.style.height=el.scrollHeight + 'px'; }
+document.getElementById('msg').addEventListener('input', function(){ autoResize(this); });
+
+function escapeHtml(str){
+  return str.replace(/[&<>'"]/g, function(tag){
+    const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', \"'\": '&#39;', '\"': '&quot;' };
+    return chars[tag] || tag;
+  });
+}
+
+// Make plain URLs clickable after escaping (PoC)
+function linkify(el){
+  el.innerHTML = el.innerHTML.replace(/(https?:\\/\\/[^\\s]+)/g, '<a href=\"$1\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>');
+}
+
+async function sendMsg(){
+  const box=document.getElementById('msg');
+  const text=box.value.trim();
+  if(!text) return;
+  const chat=document.getElementById('chat');
+  chat.insertAdjacentHTML('beforeend','<div class=\"bubble user\">'+escapeHtml(text)+'</div>');
+  box.value=''; autoResize(box); chat.scrollTop=chat.scrollHeight;
+
+  const typing=document.createElement('div');
+  typing.className='typing'; typing.innerText='Assistant is typing…';
+  chat.appendChild(typing); chat.scrollTop=chat.scrollHeight;
+
+  let resp = await fetch('/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message:text})});
+  let data = await resp.json();
+  chat.removeChild(typing);
+
+  const speaker = escapeHtml(data.speaker || '${STAFF}');
+  const reply   = escapeHtml(data.reply || '');
+  const html = '<div class=\"bubble bot\"><div class=\"badge\">'+speaker+'</div>'+reply+'</div>';
+  chat.insertAdjacentHTML('beforeend', html);
+  // linkify the last bot bubble
+  const bubbles = chat.getElementsByClassName('bubble');
+  linkify(bubbles[bubbles.length-1]);
+  chat.scrollTop=chat.scrollHeight;
+}
+</script>
+</body>
+</html>
+""")
+
+dm = DataManager(DATA_DIR)
+staff = StaffAnalytics(dm)
+
+@app.route("/")
+def index():
+    return render_template_string(INDEX_HTML_TPL.safe_substitute(STAFF=ASSISTANT_NAME_STAFF))
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "ok": True,
+        "data_dir_raw": _raw_dir,
+        "data_dir_resolved": str(DATA_DIR),
+        "exists": DATA_DIR.exists(),
+        "tables": {name: {"rows": int(df.shape[0]), "cols": int(df.shape[1])} for name, df in dm.tables.items()}
+    })
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    # Simple PoC dashboard page that echoes the requested filters
+    q = request.args.get("q", "")
+    years = request.args.get("years", "")
+    period = request.args.get("period", "")
+    product = request.args.get("product", "")
+    token = request.args.get("id", "")
+    html = f"""
+    <!doctype html>
+    <html><head><meta charset='utf-8'><title>Clarity Dashboard (PoC)</title>
+    <style>
+      body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f4f9ff;margin:0;padding:24px;color:#0f2840}}
+      .card{{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);padding:20px;max-width:960px;margin:0 auto}}
+      h1{{margin:0 0 8px}} .muted{{color:#51708d}}
+      .row{{margin:6px 0}}
+      .pill{{display:inline-block;background:#e6f0fb;color:#1b6fa8;border-radius:999px;padding:6px 10px;margin:4px 6px 0 0;font-size:13px}}
+    </style>
+    </head><body>
+      <div class="card">
+        <h1>Clarity Dashboard (PoC)</h1>
+        <div class="muted">Demo view for complex insight requests</div>
+        <div class="row"><b>Request ID:</b> {token or '(auto)'}</div>
+        <div class="row"><b>Query:</b> {q or '(none)'} </div>
+        <div class="row"><b>Filters:</b>
+          {"".join(f"<span class='pill'>Year: {y}</span>" for y in years.split(",") if y)}
+          {"<span class='pill'>Period: "+period+"</span>" if period else ""}
+          {"<span class='pill'>Product: "+product+"</span>" if product else ""}
+        </div>
+        <p class="muted">This is a placeholder dashboard for the proof-of-concept. In production, charts and tables would render here.</p>
+      </div>
+    </body></html>
+    """
+    return html
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    msg = (request.json.get("message") or "").strip()
+    reply = staff.answer(msg) if msg else "Say something!"
+    reply = brand_sanitize(reply)
+    return jsonify({"reply": reply, "speaker": ASSISTANT_NAME_STAFF})
+
+if __name__ == "__main__":
+    print(f"🚀 Clarity running at http://127.0.0.1:{PORT}/  (DATA_DIR={DATA_DIR})")
+    app.run(host="127.0.0.1", port=PORT)
