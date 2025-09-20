@@ -3,7 +3,7 @@
 # - Clarity (staff analytics) for sales/data/analytics queries
 # - Nibbles (customer support) for everything else
 #
-# Key features:
+# Features:
 # - Robust CSV loader (recursive, tolerant encodings, normalized columns)
 # - Sales corpus across all tables; prefers full names from sku_master.csv (sku_description)
 # - Trend, Top/Bottom (default N=5), Totals; Year / Quarter / Half filters
@@ -11,7 +11,7 @@
 # - Catalogue/FAQ lookups improved (multi-table + fuzzy)
 # - Data introspection: “describe column X in Y.csv”
 # - Artificial dashboard link for complex requests (PoC)
-# - Cerulean UI
+# - Cerulean UI theme
 #
 # Env: API_URL, API_KEY, MODEL, DATA_DIR, COMPANY_NAME (optional)
 
@@ -57,7 +57,7 @@ load_dotenv()
 API_URL   = (os.getenv("API_URL") or "").strip()
 API_KEY   = (os.getenv("API_KEY") or "").strip()
 MODEL     = (os.getenv("MODEL") or "openai/gpt-oss-120b").strip()
-# Prefer /mnt/data if present (your uploaded files), else Windows sample path
+# Prefer /mnt/data if present (uploaded files), else fallback path
 _default_dir = Path("/mnt/data") if Path("/mnt/data").exists() else Path(r"C:\Team_Cashew_Synthetic_Data")
 DATA_DIR  = Path(os.getenv("DATA_DIR", str(_default_dir)))
 COMPANY   = (os.getenv("COMPANY_NAME") or "Camel Nuts").strip()
@@ -93,10 +93,7 @@ def is_complex_query(q: str) -> bool:
     return any(k in ql for k in ("dashboard","cohort","retention","attribution","forecast","segmentation","seasonality","correlation"))
 
 def make_dashboard_link(query: str, years: Optional[List[int]]=None, period: Optional[str]=None, product: Optional[str]=None) -> str:
-    params = {
-        "id": uuid.uuid4().hex[:8],
-        "q": query
-    }
+    params = {"id": uuid.uuid4().hex[:8], "q": query}
     if years:  params["years"]  = ",".join(map(str, sorted(set(years))))
     if period: params["period"] = period
     if product:params["product"]= product
@@ -158,6 +155,17 @@ class DataManager:
             count += 1
             log.info(f"[load] {key}: {len(df)} rows, {len(df.columns)} cols")
         log.info(f"[load] total CSVs loaded: {count}")
+
+# -----------------------------
+# Safe table getter (avoids pandas boolean gotcha)
+# -----------------------------
+def safe_get_table(dm: DataManager, *names) -> pd.DataFrame:
+    """Return the first non-empty DataFrame from dm.tables among `names`, else empty DataFrame."""
+    for n in names:
+        df = dm.tables.get(n)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return df
+    return pd.DataFrame()
 
 # -----------------------------
 # Sales corpus builder (multi-table)
@@ -227,9 +235,8 @@ def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
         if dcol:
             sm_slice = sm[["sku", dcol]].drop_duplicates("sku")
             big = big.merge(sm_slice, on="sku", how="left")
-            # Fill empty product names
             big["product"] = big["product"].fillna(big[dcol].astype(str))
-            # If product looks like a code (SKU-ish), replace with description when available
+            # Replace SKU-like codes with description when available
             sku_like = big["product"].astype(str).str.match(r"^[A-Za-z0-9\-_]+$")
             big.loc[sku_like & big[dcol].notna(), "product"] = big.loc[sku_like & big[dcol].notna(), dcol].astype(str)
             big.drop(columns=[dcol], inplace=True, errors="ignore")
@@ -282,19 +289,19 @@ def _tokens(s: str) -> List[str]:
     return [w for w in re.findall(r"[A-Za-z0-9]+", (s or "").lower()) if w not in _STOP]
 
 def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Optional[str]:
-    candidates = []
-    names_to_search = []
+    candidates: List[str] = []
+    pools: List[Tuple[str, List[str]]] = []
 
     sm = dm.tables.get("sku_master")
     if isinstance(sm, pd.DataFrame) and "sku_description" in sm.columns:
         sdesc = sm["sku_description"].astype(str).dropna().unique().tolist()
         candidates += sdesc
-        names_to_search.append(("sku_master.sku_description", sdesc))
+        pools.append(("sku_master.sku_description", sdesc))
 
     if isinstance(sales, pd.DataFrame) and "product" in sales.columns:
         sprod = sales["product"].astype(str).dropna().unique().tolist()
         candidates += sprod
-        names_to_search.append(("sales.product", sprod))
+        pools.append(("sales.product", sprod))
 
     if not candidates: return None
 
@@ -310,7 +317,7 @@ def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Opt
     # 2) token containment fallback (needs >=2 token hits)
     qtok = set(_tokens(q))
     best2, hits2 = None, 0
-    for label, pool in names_to_search:
+    for _, pool in pools:
         for cand in pool:
             ctok = set(_tokens(cand))
             hits = len(qtok & ctok)
@@ -326,8 +333,8 @@ class CustomerTools:
         self.dm = dm
 
     def faq_lookup(self, q: str) -> str:
-        faq = self.dm.tables.get("faqs") or self.dm.tables.get("faq")
-        if not isinstance(faq, pd.DataFrame) or faq.empty or not {"question","answer"} <= set(faq.columns):
+        faq = safe_get_table(self.dm, "faqs", "faq")
+        if faq.empty or not {"question","answer"} <= set(faq.columns):
             return ""
         best, score = None, 0
         for _, row in faq.iterrows():
@@ -501,14 +508,14 @@ class Assistant:
             return "Say something!", ASSISTANT_NAME_CUSTOMER
 
         if is_analytics_query(q):
-            # Schema/column Qs first
+            # 1) Column/schema questions
             desc = self.ana.describe_column(q)
             if desc:
                 if is_complex_query(q):
                     desc += f"\n\nOpen dashboard: {make_dashboard_link(q)}"
                 return desc, ASSISTANT_NAME_STAFF
 
-            # Analytics: trend -> top/bottom -> total
+            # 2) Analytics: trend -> top/bottom -> total
             for handler in (self.ana.trend, self.ana.top_bottom, self.ana.total):
                 res = handler(q)
                 if res:
@@ -517,7 +524,7 @@ class Assistant:
                         text += f"\n\nOpen dashboard: {make_dashboard_link(q, years=years, period=period, product=product)}"
                     return text, ASSISTANT_NAME_STAFF
 
-            # LLM fallback (Clarity tone)
+            # 3) LLM fallback (Clarity tone)
             return call_model([
                 {"role":"system","content":(
                     f"You are Clarity, an internal analytics officer at {COMPANY}. "
@@ -535,9 +542,9 @@ class Assistant:
         if cat:
             return cat, ASSISTANT_NAME_CUSTOMER
 
-        # LLM fallback (Nibbles tone)
-        faq_df  = (self.dm.tables.get("faqs") or self.dm.tables.get("faq") or pd.DataFrame()).head(10)
-        prod_df = (self.dm.tables.get("product_inventory") or self.dm.tables.get("sku_master") or pd.DataFrame()).head(10)
+        # LLM fallback (Nibbles tone) using safe table getter (no boolean-or DF)
+        faq_df  = safe_get_table(self.dm, "faqs", "faq").head(10)
+        prod_df = safe_get_table(self.dm, "product_inventory", "sku_master").head(10)
         faq_examples  = faq_df.to_dict(orient="records") if not faq_df.empty else []
         prod_examples = prod_df.to_dict(orient="records") if not prod_df.empty else []
 
