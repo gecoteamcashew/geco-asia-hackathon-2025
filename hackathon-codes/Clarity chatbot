@@ -1,15 +1,21 @@
-# Clarity (staff) – Internal analytics assistant
-# Flask chatbot with API, dynamic CSV ingestion, data-driven answers
-# - Uses CSVs for sales summaries, top/bottom N, year & channel filters
-# - Falls back to the model for non-data questions
-# - Cerulean blue theme
-# - Env: API_URL, API_KEY, MODEL, DATA_DIR, CLARITY_PORT (optional), PORT (fallback)
-# - Default port if none set: 5002
+# clarity_staff.py
+# Clarity (staff)
+# Flask chatbot with API, dynamic CSV ingestion, and real data answers
+# - Follows the same logic/behavior as your reference script's StaffAnalytics
+# - Uses CSVs for sales summaries (year filter, top/bottom N)
+# - Falls back to the model for non-sales/revenue questions
+# - Cerulean blue UI
+#
+# Environment:
+#   API_URL, API_KEY, MODEL, DATA_DIR
+#   CLARITY_PORT (optional), PORT (fallback, optional)
+#
+# Brand: Cashew4Nuts (ensures no "Camel Nuts" slips through)
 
 import os, re, subprocess, sys, logging, json
 from pathlib import Path
 from string import Template
-from typing import Dict, List, Optional
+from typing import Dict, List
 from dotenv import load_dotenv
 
 # -----------------------------
@@ -38,24 +44,25 @@ ensure_deps()
 
 import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
-from fuzzywuzzy import fuzz
+from fuzzywuzzy import fuzz  # not used heavily here, but retained for parity
 import requests
 
 # -----------------------------
 # Load env
 # -----------------------------
 load_dotenv()
+
 API_URL  = os.getenv("API_URL", "").strip()
 API_KEY  = os.getenv("API_KEY", "").strip()
 MODEL    = os.getenv("MODEL", "openai/gpt-oss-120b")
 DATA_DIR = Path(os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data"))
 PORT     = int(os.getenv("CLARITY_PORT", os.getenv("PORT", "5002")))
 
-ASSISTANT_NAME = "Clarity"
-COMPANY_NAME   = "Cashew4Nuts"
+ASSISTANT_NAME_STAFF = "Clarity"
+COMPANY_NAME = "Cashew4Nuts"
 
 # -----------------------------
-# Brand sanitizer (mask any Camel Nuts mention)
+# Brand sanitize (mask any legacy "Camel Nuts")
 # -----------------------------
 def brand_sanitize(s: str) -> str:
     if not isinstance(s, str):
@@ -72,16 +79,16 @@ class DataManager:
         self._load_all()
 
     def _safe_csv(self, path: Path) -> pd.DataFrame:
-        df = pd.DataFrame()
         for enc in ("utf-8", "utf-8-sig", "latin-1"):
             try:
                 df = pd.read_csv(path, encoding=enc)
                 break
             except Exception:
-                continue
+                df = pd.DataFrame()
         if df.empty:
             log.warning(f"[csv] Failed to load {path}")
             return df
+        # cleanup
         df.columns = [str(c).replace("\u00A0", " ").strip().lower() for c in df.columns]
         for c in df.columns:
             if df[c].dtype == object:
@@ -99,20 +106,14 @@ class DataManager:
             self.tables[key] = df
             log.info(f"[load] {key}: {len(df)} rows, {len(df.columns)} cols")
 
-    def get_table_like(self, key_fragment: str) -> Optional[pd.DataFrame]:
-        key_fragment = key_fragment.lower()
-        for k, v in self.tables.items():
-            if key_fragment in k:
-                return v
-        return None
-
 # -----------------------------
-# Model caller (plain text)
+# API caller
 # -----------------------------
 def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
     if not API_KEY or not API_URL:
-        return "Assistant is temporarily unavailable. Please try again later."
+        return "API not configured. Please check your .env file."
     try:
+        # force plain text
         messages = [{"role": "system", "content":
                      "Always answer in plain text only. "
                      "Do not use Markdown, bold, tables, or special formatting."}] + messages
@@ -124,194 +125,123 @@ def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
             timeout=20,
         )
         reply = r.json()["choices"][0]["message"]["content"].strip()
+
+        # strip common markdown leftovers
         reply = re.sub(r"[*_`#>|]", "", reply)
         return reply
     except Exception as e:
         log.error(f"[api] error: {e}")
-        return "Sorry, I couldn’t connect to the assistant service."
+        return "Sorry, I couldn’t connect to the assistant API."
 
 # -----------------------------
-# Analytics Helpers
-# -----------------------------
-REV_COL_PAT  = re.compile(r"(net_?sales|gross_?sales|amount|revenue|total_?amount|order_?amount|grand_?total)", re.I)
-PROD_COL_PAT = re.compile(r"(sku_?description|product_?name|item_?name|sku|desc|name)", re.I)
-DATE_COL_PAT = re.compile(r"(order_?date|date|datetime|timestamp|time)", re.I)
-CHAN_COL_PAT = re.compile(r"(channel|platform|source|store|marketplace)", re.I)
-
-CHANNEL_KEYWORDS = {
-    "shopee":"shopee", "lazada":"lazada", "shopify":"shopify", "website":"website",
-    "offline":"offline", "retail":"retail", "ecommerce":"ecommerce", "e-commerce":"ecommerce"
-}
-
-def _find_col(df: pd.DataFrame, pat: re.Pattern) -> Optional[str]:
-    return next((c for c in df.columns if pat.search(c)), None)
-
-def _detect_channel_filter(query: str) -> Optional[str]:
-    q = query.lower()
-    for k, v in CHANNEL_KEYWORDS.items():
-        if k in q: return v
-    return None
-
-# -----------------------------
-# Staff Assistant
+# Staff Assistant (Sales analytics + API)
+# (same behavior as your reference: pick a 'sales' table, detect columns, filter by year,
+#  support top/bottom N, else total revenue; non-sales queries go to the model)
 # -----------------------------
 class StaffAnalytics:
     def __init__(self, dm: DataManager):
         self.dm = dm
 
-    def _load_sales_df(self) -> Optional[pd.DataFrame]:
-        # Prefer canonical names
-        df = self.dm.get_table_like("sales_transactions")
-        if df is None or df.empty:
-            df = self.dm.get_table_like("ecommerce_purchases")
-        if df is not None and not df.empty:
-            return df
-
-        # Fallback: pick any table that has BOTH a revenue-ish and product-ish column
-        best_df, best_name, best_len = None, None, 0
-        for name, cand in self.dm.tables.items():
-            if cand is None or cand.empty:
-                continue
-            rev = _find_col(cand, REV_COL_PAT)
-            prod = _find_col(cand, PROD_COL_PAT)
-            if rev and prod and len(cand) > best_len:
-                best_df, best_name, best_len = cand, name, len(cand)
-        if best_df is not None:
-            log.info(f"[auto] Using '{best_name}' as sales source (rev+product detected, rows={best_len})")
-            return best_df
-
-        return None
-
     def sales_summary(self, query: str) -> str:
-        df = self._load_sales_df()
-        if df is None or df.empty:
-            loaded = ", ".join(sorted(self.dm.tables.keys()))
-            return (
-                "No sales data found.\n"
-                f"Loaded tables: {loaded or '(none)'}\n"
-                "Tips: Ensure DATA_DIR points to your CSV folder and that a file like "
-                "'sales_transactions.csv' or 'ecommerce_purchases.csv' exists, OR include "
-                "columns matching revenue (net_sales/gross_sales/amount/revenue/total_amount/...) "
-                "and product (sku_description/product_name/...)."
-            )
+        df = None
+        # Follow the original logic: pick the first table with "sales" in the name and not empty.
+        # (Tiny practical enhancement: if no "sales" table found, try one with "ecommerce" in name.)
+        for k, v in self.dm.tables.items():
+            if "sales" in k and not v.empty:
+                df = v
+                break
+        if df is None:
+            for k, v in self.dm.tables.items():
+                if "ecommerce" in k and not v.empty:
+                    df = v
+                    break
 
-        rev_col  = _find_col(df, REV_COL_PAT)
-        prod_col = _find_col(df, PROD_COL_PAT)
-        date_col = _find_col(df, DATE_COL_PAT)
-        chan_col = _find_col(df, CHAN_COL_PAT)
+        if df is None:
+            return "No sales data found."
 
-        if not rev_col:  return "Sales file has no revenue/amount column."
-        if not prod_col: return "Sales file has no product description column."
+        # detect revenue column
+        rev_col = next((c for c in df.columns if re.search(r"(amount|revenue|sales)", c, re.I)), None)
+        if not rev_col:
+            return "Sales file has no revenue/amount column."
+
+        # detect product column
+        prod_col = next((c for c in df.columns if re.search(r"(desc|product|item|name)", c, re.I)), None)
+        if not prod_col:
+            return "Sales file has no product description column."
+
+        # detect date column
+        date_col = next((c for c in df.columns if re.search(r"(date|time)", c, re.I)), None)
 
         df = df.copy()
         df[rev_col] = pd.to_numeric(df[rev_col], errors="coerce").fillna(0)
 
-        # Filter by channel if present
-        ch = _detect_channel_filter(query)
-        if ch and chan_col:
-            df = df[df[chan_col].astype(str).str.contains(ch, case=False, na=False)]
-
-        # Filter by year if present
-        m_year = re.search(r"(20\d{2})", query)
-        if m_year and date_col:
-            year = int(m_year.group(1))
+        # filter by year if present
+        m = re.search(r"(20\d{2})", query)
+        if date_col and m:
+            year = int(m.group(1))
             df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
             df = df[df[date_col].dt.year == year]
 
-        grouped = df.groupby(prod_col, dropna=False)[rev_col].sum().sort_values(ascending=False)
+        grouped = df.groupby(prod_col)[rev_col].sum().sort_values(ascending=False)
 
-        # top/bottom N
-        m_top = re.search(r"\btop\s+(\d+)\b", query, re.I)
-        m_bot = re.search(r"\bbottom\s+(\d+)\b", query, re.I)
+        # detect top/bottom N
+        m_top = re.search(r"top\s+(\d+)", query, re.I)
+        m_bot = re.search(r"bottom\s+(\d+)", query, re.I)
         if m_top:
             n = int(m_top.group(1))
             head = grouped.head(n)
-            return "\n".join([f"Top {n} products by revenue:"]
-                             + [f"- {p}: ${v:,.2f}" for p, v in head.items()])
+            return "\n".join([f"Top {n} products by revenue:"] + [f"- {p}: ${v:,.2f}" for p, v in head.items()])
         if m_bot:
             n = int(m_bot.group(1))
             tail = grouped.tail(n)
-            return "\n".join([f"Bottom {n} products by revenue:"]
-                             + [f"- {p}: ${v:,.2f}" for p, v in tail.items()])
+            return "\n".join([f"Bottom {n} products by revenue:"] + [f"- {p}: ${v:,.2f}" for p, v in tail.items()])
 
-        total = grouped.sum()
-        return f"Total revenue{f' for {ch}' if ch else ''}{f' in {m_year.group(1)}' if m_year else ''}: ${total:,.2f}"
-
-    def profit_note(self) -> str:
-        # Optional helper if user asks profit but we lack COGS/expenses
-        cost_cols = ("cogs","cost","cost_of_goods","unit_cost")
-        have_costs = any(any(c in col for col in df.columns) for df in self.dm.tables.values() for c in cost_cols)
-        if have_costs:
-            return ("I found cost columns. Ask like: 'net profit 2024' or 'gross margin by product 2024'.")
-        else:
-            return ("Profit requires COGS/expenses data. I couldn’t find those columns. "
-                    "Add a COGS/expenses CSV with fields like product, date, unit_cost or expense_amount.")
+        return f"Total revenue: ${grouped.sum():,.2f}"
 
     def answer(self, q: str) -> str:
-        ql = q.lower()
-        if any(k in ql for k in ("sale", "revenue", "gmv", "profit", "margin", "roi", "roas", "forecast", "trend", "top", "bottom")):
-            if "profit" in ql or "margin" in ql:
-                df = self._load_sales_df()
-                if df is None or df.empty:
-                    loaded = ", ".join(sorted(self.dm.tables.keys()))
-                    return (
-                        "No sales data found.\n"
-                        f"Loaded tables: {loaded or '(none)'}\n"
-                        "Tips: Ensure DATA_DIR points to your CSV folder and that a file like "
-                        "'sales_transactions.csv' or 'ecommerce_purchases.csv' exists, OR include "
-                        "columns matching revenue and product."
-                    )
-                note = self.profit_note()
-                if "requires COGS" in note:
-                    rev = self.sales_summary(q)
-                    return f"{rev}\n\n{note}"
-                else:
-                    return note
+        if "sale" in q.lower() or "revenue" in q.lower():
             return self.sales_summary(q)
-
-        # Non-data: consult the model with light context
-        skus = self.dm.get_table_like("sku_master")
-        sku_examples = (skus.head(10).to_dict(orient="records") if isinstance(skus, pd.DataFrame) and not skus.empty else [])
         return call_model([
-            {"role":"system","content":(
-                f"You are Clarity, an internal analytics officer at {COMPANY_NAME}. "
-                "Use the CSV data for analysis when possible. "
-                "If the query is outside the data scope, answer helpfully and concisely."
+            {"role": "system", "content": (
+                "You are Clarity, an internal staff analytics officer at Cashew4Nuts. "
+                "Use the CSV data for analysis if possible. "
+                "If the query is outside the data scope, answer helpfully but concisely. "
+                "Do not use markdown or formatting."
             )},
-            {"role":"user","content": q},
-            {"role":"system","content": f"Sample catalogue rows: {json.dumps(sku_examples, ensure_ascii=False)}"}
+            {"role": "user", "content": q},
         ])
 
 # -----------------------------
-# Flask App + UI (cerulean blue)
+# Flask App + Cerulean UI
 # -----------------------------
 app = Flask(__name__)
+
 INDEX_HTML_TPL = Template("""
 <!doctype html>
 <html>
 <head>
-  <title>${BOT}</title>
+  <title>${STAFF}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-  :root{ --accent:#2a9df4; --accent-dark:#1b6fa8; --bg:#f4f9ff; }
+  :root{ --cerulean:#2a9df4; --cerulean-dark:#1b6fa8; --bg:#f4f9ff; }
   *{box-sizing:border-box}
   body{background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
   .container{max-width:720px;margin:0 auto;padding:20px}
   .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
-  .header{background:linear-gradient(135deg,var(--accent),#9fd3ff);color:#0f2840;padding:20px;text-align:center}
+  .header{background:linear-gradient(135deg,var(--cerulean),#9fd3ff);color:#0f2840;padding:20px;text-align:center}
   .header h1{margin:0 0 6px;font-size:22px}
   .header p{margin:0;opacity:.85;font-size:13px}
   .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#f7fbff}
   .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
-  .user{align-self:flex-end;background:var(--accent);color:#ffffff}
+  .user{align-self:flex-end;background:var(--cerulean);color:#ffffff}
   .bot{align-self:flex-start;background:#ffffff;color:#1e2a36;border:1px solid #e6f0fb}
   .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
   .composer{display:flex;padding:14px;border-top:1px solid #e6f0fb;background:#fff}
   .input-wrap{flex:1;position:relative}
   textarea{width:100%;border-radius:24px;padding:12px 88px 12px 14px;border:2px solid #e6f0fb;resize:none;font-family:inherit;font-size:14px;outline:none}
-  textarea:focus{border-color:var(--accent)}
-  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--accent);color:#ffffff;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
-  button:hover{background:var(--accent-dark)}
+  textarea:focus{border-color:var(--cerulean)}
+  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--cerulean);color:#ffffff;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
+  button:hover{background:var(--cerulean-dark)}
   .typing{color:#516579;font-style:italic;align-self:flex-start}
   .hint{font-size:12px;color:#516579;margin-top:6px}
   </style>
@@ -320,18 +250,18 @@ INDEX_HTML_TPL = Template("""
   <div class="container">
     <div class="widget">
       <div class="header">
-        <h1>${BOT}</h1>
-        <p>Ask for sales summaries, top/bottom products, and filters by year or channel (Shopee, Lazada, Shopify, website, offline) for Cashew4Nuts.</p>
+        <h1>${STAFF}</h1>
+        <p>${STAFF} provides sales summaries from CSVs for Cashew4Nuts. Try: "Top 5 products by revenue 2024".</p>
       </div>
       <div id="chat" class="chat">
         <div class="bubble bot">
-          <div class="badge">${BOT}</div>
-Hello! I’m ${BOT} from Cashew4Nuts. Examples:
-• “Top 5 products by revenue 2024”
-• “Total revenue Shopee 2023”
-• “Bottom 3 by revenue Lazada 2024”
+          <div class="badge">${STAFF}</div>
+Hello! I’m ${STAFF} from Cashew4Nuts. Ask things like:
+• "Top 5 products by revenue 2024"
+• "Bottom 3 by revenue 2023"
+• "Total revenue 2024"
         </div>
-        <div class="hint">Tip: Include a year and (optionally) a channel for precise answers.</div>
+        <div class="hint">Tip: Include a year for precise results. Non-sales questions are answered briefly via the model.</div>
       </div>
       <div class="composer">
         <div class="input-wrap">
@@ -370,7 +300,7 @@ async function sendMsg(){
   let data = await resp.json();
   chat.removeChild(typing);
 
-  const speaker = escapeHtml(data.speaker || '${BOT}');
+  const speaker = escapeHtml(data.speaker || '${STAFF}');
   const reply   = escapeHtml(data.reply || '');
   chat.insertAdjacentHTML('beforeend','<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>');
   chat.scrollTop=chat.scrollHeight;
@@ -380,20 +310,14 @@ async function sendMsg(){
 </html>
 """)
 
-# -----------------------------
-# Wire up app
-# -----------------------------
 dm = DataManager(DATA_DIR)
 staff = StaffAnalytics(dm)
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML_TPL.safe_substitute(BOT=ASSISTANT_NAME))
-
-@app.get("/health")
-def health():
-    return jsonify({"ok": True, "data_dir": str(DATA_DIR), "tables": sorted(list(dm.tables.keys()))})
+    return render_template_string(INDEX_HTML_TPL.safe_substitute(
+        STAFF=ASSISTANT_NAME_STAFF))
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -403,7 +327,7 @@ def chat():
     else:
         reply = staff.answer(msg)
     reply = brand_sanitize(reply)
-    return jsonify({"reply": reply, "speaker": ASSISTANT_NAME})
+    return jsonify({"reply": reply, "speaker": ASSISTANT_NAME_STAFF})
 
 if __name__ == "__main__":
     print(f"🚀 Clarity running at http://127.0.0.1:{PORT}/  (DATA_DIR={DATA_DIR})")
