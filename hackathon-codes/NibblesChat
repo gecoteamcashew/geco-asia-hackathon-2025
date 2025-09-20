@@ -52,6 +52,16 @@ DATA_DIR = Path(os.getenv("DATA_DIR", r"C:\Team_Cashew_Synthetic_Data"))
 PORT     = int(os.getenv("NIBBLES_PORT", os.getenv("PORT", "5001")))
 
 ASSISTANT_NAME = "Nibbles"
+COMPANY_NAME   = "Cashew4Nuts"
+
+# -----------------------------
+# Brand sanitizer (mask any Camel Nuts mention)
+# -----------------------------
+def brand_sanitize(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+    # Replace "Camel Nuts" (various spacings/hyphens/quotes) with Cashew4Nuts
+    return re.sub(r"camel[\s\u00A0\-]*nuts[’'s]*", COMPANY_NAME, s, flags=re.I)
 
 # -----------------------------
 # Data Manager (dynamic CSV loader)
@@ -212,7 +222,7 @@ class CustomerQA:
 
         return call_model([
             {"role":"system","content":(
-                "You are Nibbles, a warm Camel Nuts customer service officer. "
+                f"You are Nibbles, a warm {COMPANY_NAME} customer service officer. "
                 "Use the company FAQ and product catalogue when possible. "
                 "Do not answer internal business questions (sales, revenue, profit, ROI, etc.). "
                 "Keep responses short, friendly, and accurate. "
@@ -244,7 +254,7 @@ INDEX_HTML_TPL = Template("""
   .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#fffdf9}
   .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
   .user{align-self:flex-end;background:var(--accent);color:#1f160d}
-  .bot{align-self:flex-start;background:#ffffff;color:#2b2b2b;border:1px solid #eee}
+  .bot{align_self:flex-start;background:#ffffff;color:#2b2b2b;border:1px solid #eee}
   .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
   .composer{display:flex;padding:14px;border-top:1px solid #eee;background:#fff}
   .input-wrap{flex:1;position:relative}
@@ -261,12 +271,12 @@ INDEX_HTML_TPL = Template("""
     <div class="widget">
       <div class="header">
         <h1>${BOT}</h1>
-        <p>Ask about products, membership, orders, delivery, and general info. For internal analytics, please contact our team.</p>
+        <p>${BOT} assists customers of Cashew4Nuts. Ask about products, membership, orders, delivery, and general info.</p>
       </div>
       <div id="chat" class="chat">
         <div class="bubble bot">
           <div class="badge">${BOT}</div>
-Hi! I’m ${BOT}. I can help with:
+Hi! I’m ${BOT} from Cashew4Nuts. I can help with:
 • Products & availability
 • Ingredients & allergens
 • Orders, delivery & membership
@@ -331,12 +341,18 @@ app = Flask(__name__)
 def index():
     return render_template_string(INDEX_HTML_TPL.safe_substitute(BOT=ASSISTANT_NAME))
 
+@app.get("/health")
+def health():
+    return jsonify({"ok": True, "data_dir": str(DATA_DIR), "tables": sorted(list(dm.tables.keys()))})
+
 @app.route("/chat", methods=["POST"])
 def chat():
     msg = (request.json.get("message") or "").strip()
     if not msg:
-        return jsonify({"reply": "Say something!", "speaker": ASSISTANT_NAME})
-    reply = cust.answer(msg)
+        reply = "Say something!"
+    else:
+        reply = cust.answer(msg)
+    reply = brand_sanitize(reply)
     return jsonify({"reply": reply, "speaker": ASSISTANT_NAME})
 
 if __name__ == "__main__":
