@@ -1,16 +1,14 @@
 # clarity_staff.py
-# Clarity (staff)
-# Flask chatbot with API, dynamic CSV ingestion, and real data answers
-# - Follows the same logic/behavior as your reference script's StaffAnalytics
-# - Uses CSVs for sales summaries (year filter, top/bottom N)
-# - Falls back to the model for non-sales/revenue questions
-# - Cerulean blue UI
+# Clarity (staff) – Internal analytics assistant for Cashew4Nuts
+# - Dynamic CSV ingestion
+# - Sales summaries with year filter + top/bottom N
+# - Joins sku_master to show human-readable product names
+# - Falls back to model for non-sales queries
+# - Cerulean UI
 #
-# Environment:
+# Env:
 #   API_URL, API_KEY, MODEL, DATA_DIR
-#   CLARITY_PORT (optional), PORT (fallback, optional)
-#
-# Brand: Cashew4Nuts (ensures no "Camel Nuts" slips through)
+#   CLARITY_PORT (optional), PORT (fallback)
 
 import os, re, subprocess, sys, logging, json
 from pathlib import Path
@@ -44,7 +42,7 @@ ensure_deps()
 
 import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
-from fuzzywuzzy import fuzz  # not used heavily here, but retained for parity
+from fuzzywuzzy import fuzz  # kept for parity (not used heavily here)
 import requests
 
 # -----------------------------
@@ -62,7 +60,7 @@ ASSISTANT_NAME_STAFF = "Clarity"
 COMPANY_NAME = "Cashew4Nuts"
 
 # -----------------------------
-# Brand sanitize (mask any legacy "Camel Nuts")
+# Brand sanitizer
 # -----------------------------
 def brand_sanitize(s: str) -> str:
     if not isinstance(s, str):
@@ -79,12 +77,13 @@ class DataManager:
         self._load_all()
 
     def _safe_csv(self, path: Path) -> pd.DataFrame:
+        df = pd.DataFrame()
         for enc in ("utf-8", "utf-8-sig", "latin-1"):
             try:
                 df = pd.read_csv(path, encoding=enc)
                 break
             except Exception:
-                df = pd.DataFrame()
+                continue
         if df.empty:
             log.warning(f"[csv] Failed to load {path}")
             return df
@@ -107,13 +106,12 @@ class DataManager:
             log.info(f"[load] {key}: {len(df)} rows, {len(df.columns)} cols")
 
 # -----------------------------
-# API caller
+# API caller (plain text only)
 # -----------------------------
 def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
     if not API_KEY or not API_URL:
         return "API not configured. Please check your .env file."
     try:
-        # force plain text
         messages = [{"role": "system", "content":
                      "Always answer in plain text only. "
                      "Do not use Markdown, bold, tables, or special formatting."}] + messages
@@ -125,78 +123,148 @@ def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
             timeout=20,
         )
         reply = r.json()["choices"][0]["message"]["content"].strip()
-
-        # strip common markdown leftovers
-        reply = re.sub(r"[*_`#>|]", "", reply)
+        reply = re.sub(r"[*_`#>|]", "", reply)  # strip stray markdown
         return reply
     except Exception as e:
         log.error(f"[api] error: {e}")
         return "Sorry, I couldn’t connect to the assistant API."
 
 # -----------------------------
-# Staff Assistant (Sales analytics + API)
-# (same behavior as your reference: pick a 'sales' table, detect columns, filter by year,
-#  support top/bottom N, else total revenue; non-sales queries go to the model)
+# Staff Assistant (sales analytics + model fallback)
+# - Picks a sales table
+# - Detects revenue/product/date cols
+# - Year filter
+# - Top/Bottom N
+# - Joins sku_master for readable names if needed
 # -----------------------------
 class StaffAnalytics:
     def __init__(self, dm: DataManager):
         self.dm = dm
 
+    # Prefer table with 'sales' in name; then common fallbacks; else auto-detect by revenue-ish column
+    def _pick_sales_df(self):
+        # 1) Sales in name
+        for name, df in self.dm.tables.items():
+            if "sales" in name and isinstance(df, pd.DataFrame) and not df.empty:
+                return df, name
+        # 2) Known fallbacks
+        for name in ("ecommerce_purchases", "orders", "transactions"):
+            df = self.dm.tables.get(name)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df, name
+        # 3) Auto-detect by revenue-ish column
+        rev_pat = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|sales)", re.I)
+        best = (None, None, 0)
+        for name, df in self.dm.tables.items():
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            if any(rev_pat.search(c) for c in df.columns):
+                if len(df) > best[2]:
+                    best = (df, name, len(df))
+        return (best[0], best[1]) if best[0] is not None else (None, None)
+
+    def _pick_columns(self, df: pd.DataFrame):
+        # revenue
+        rev_priority = [
+            "line_net_sales_sgd", "net_sales_sgd", "net_sales",
+            "sales_amount", "revenue", "total_amount", "amount"
+        ]
+        rev_col = next((c for c in rev_priority if c in df.columns), None)
+        if rev_col is None:
+            rev_col = next((c for c in df.columns if re.search(r"(net_?sales|line_?net_?sales|amount|revenue|sales)", c, re.I)), None)
+
+        # product / sku
+        prod_priority = ["sku_description", "product_name", "item_name", "desc", "name", "sku"]
+        prod_col = next((c for c in prod_priority if c in df.columns), None)
+        if prod_col is None:
+            prod_col = next((c for c in df.columns if re.search(r"(sku_?description|product|item|desc|name|sku)", c, re.I)), None)
+
+        # date
+        date_priority = ["order_date", "order_datetime", "date", "datetime", "timestamp", "time"]
+        date_col = next((c for c in date_priority if c in df.columns), None)
+        if date_col is None:
+            date_col = next((c for c in df.columns if re.search(r"(date|time)", c, re.I)), None)
+
+        log.info(f"[cols] revenue={rev_col}, product={prod_col}, date={date_col}")
+        return rev_col, prod_col, date_col
+
+    def _enrich_product_from_sku_master(self, df: pd.DataFrame, prod_col: str):
+        # If we already have a readable description, keep it
+        if prod_col and prod_col.lower() != "sku":
+            return df, prod_col
+
+        sku_master = self.dm.tables.get("sku_master")
+        if not isinstance(sku_master, pd.DataFrame) or sku_master.empty:
+            return df, prod_col
+
+        # Need an SKU key to join on
+        left_key = prod_col if prod_col else "sku"
+        if left_key not in df.columns or "sku" not in sku_master.columns:
+            return df, prod_col
+
+        # Pick the prettiest description column from sku_master
+        desc_col = next((c for c in ("sku_description", "product_name", "item_name") if c in sku_master.columns), None)
+        if not desc_col:
+            return df, prod_col
+
+        joined = df.merge(sku_master[["sku", desc_col]].drop_duplicates("sku"), on="sku", how="left")
+        joined["__product_display__"] = joined[desc_col].fillna(joined[left_key].astype(str))
+        return joined, "__product_display__"
+
     def sales_summary(self, query: str) -> str:
-        df = None
-        # Follow the original logic: pick the first table with "sales" in the name and not empty.
-        # (Tiny practical enhancement: if no "sales" table found, try one with "ecommerce" in name.)
-        for k, v in self.dm.tables.items():
-            if "sales" in k and not v.empty:
-                df = v
-                break
-        if df is None:
-            for k, v in self.dm.tables.items():
-                if "ecommerce" in k and not v.empty:
-                    df = v
-                    break
+        df, source_name = self._pick_sales_df()
+        if df is None or df.empty:
+            loaded = ", ".join(sorted(self.dm.tables.keys()))
+            return (
+                "No sales data found.\n"
+                f"Loaded tables: {loaded or '(none)'}\n"
+                "Expected a file like 'sales_transactions.csv' or anything with a revenue column."
+            )
 
-        if df is None:
-            return "No sales data found."
-
-        # detect revenue column
-        rev_col = next((c for c in df.columns if re.search(r"(amount|revenue|sales)", c, re.I)), None)
+        rev_col, prod_col, date_col = self._pick_columns(df)
         if not rev_col:
             return "Sales file has no revenue/amount column."
-
-        # detect product column
-        prod_col = next((c for c in df.columns if re.search(r"(desc|product|item|name)", c, re.I)), None)
         if not prod_col:
-            return "Sales file has no product description column."
+            prod_col = "sku" if "sku" in df.columns else None
+        if not prod_col:
+            return "Sales file has no product/SKU column."
 
-        # detect date column
-        date_col = next((c for c in df.columns if re.search(r"(date|time)", c, re.I)), None)
+        work = df.copy()
+        work[rev_col] = pd.to_numeric(work[rev_col], errors="coerce").fillna(0)
 
-        df = df.copy()
-        df[rev_col] = pd.to_numeric(df[rev_col], errors="coerce").fillna(0)
+        # Year filter if present
+        m_year = re.search(r"(20\d{2})", query)
+        if m_year and date_col:
+            year = int(m_year.group(1))
+            work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+            work = work[work[date_col].dt.year == year]
+            if work.empty:
+                return f"No rows found for {year}."
 
-        # filter by year if present
-        m = re.search(r"(20\d{2})", query)
-        if date_col and m:
-            year = int(m.group(1))
-            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-            df = df[df[date_col].dt.year == year]
+        # Enrich names from sku_master if necessary
+        work, prod_col = self._enrich_product_from_sku_master(work, prod_col)
 
-        grouped = df.groupby(prod_col)[rev_col].sum().sort_values(ascending=False)
+        grouped = (work.groupby(prod_col, dropna=False)[rev_col]
+                        .sum()
+                        .sort_values(ascending=False))
 
-        # detect top/bottom N
-        m_top = re.search(r"top\s+(\d+)", query, re.I)
-        m_bot = re.search(r"bottom\s+(\d+)", query, re.I)
+        # top/bottom N
+        m_top = re.search(r"\btop\s+(\d+)\b", query, re.I)
+        m_bot = re.search(r"\bbottom\s+(\d+)\b", query, re.I)
         if m_top:
             n = int(m_top.group(1))
             head = grouped.head(n)
-            return "\n".join([f"Top {n} products by revenue:"] + [f"- {p}: ${v:,.2f}" for p, v in head.items()])
+            lines = [f"Top {n} products by revenue{f' in {m_year.group(1)}' if m_year else ''}:"]
+            lines += [f"- {p}: ${v:,.2f}" for p, v in head.items()]
+            return "\n".join(lines)
         if m_bot:
             n = int(m_bot.group(1))
             tail = grouped.tail(n)
-            return "\n".join([f"Bottom {n} products by revenue:"] + [f"- {p}: ${v:,.2f}" for p, v in tail.items()])
+            lines = [f"Bottom {n} products by revenue{f' in {m_year.group(1)}' if m_year else ''}:"]
+            lines += [f"- {p}: ${v:,.2f}" for p, v in tail.items()]
+            return "\n".join(lines)
 
-        return f"Total revenue: ${grouped.sum():,.2f}"
+        return f"Total revenue{f' in {m_year.group(1)}' if m_year else ''}: ${grouped.sum():,.2f}"
 
     def answer(self, q: str) -> str:
         if "sale" in q.lower() or "revenue" in q.lower():
@@ -316,8 +384,16 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML_TPL.safe_substitute(
-        STAFF=ASSISTANT_NAME_STAFF))
+    return render_template_string(INDEX_HTML_TPL.safe_substitute(STAFF=ASSISTANT_NAME_STAFF))
+
+@app.route("/health", methods=["GET"])
+def health():
+    # quick diagnostics
+    return jsonify({
+        "ok": True,
+        "data_dir": str(DATA_DIR),
+        "tables": {name: {"rows": int(df.shape[0]), "cols": int(df.shape[1])} for name, df in dm.tables.items()}
+    })
 
 @app.route("/chat", methods=["POST"])
 def chat():
