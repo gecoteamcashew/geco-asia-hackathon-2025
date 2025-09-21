@@ -890,7 +890,6 @@ INDEX_HTML_TPL = Template("""
     <div class="widget">
       <div class="header">
         <h1>${CUSTOMER}</h1>
-        <p>${CUSTOMER} serves customers from CSV data only. ${STAFF} answers staff analytics. Prefix with “Staff query:”</p>
       </div>
       <div id="chat" class="chat">
         <div class="bubble bot">
@@ -901,7 +900,6 @@ Hello! I'm ${CUSTOMER}. I can help you with:
 • Nutritional info and allergens (FAQ or catalogue-based)
 • For staff analytics, start your message with “Staff query:”
         </div>
-        <div class="hint">Tip: You can chat in your language. Staff analytics still need the “Staff query:” prefix.</div>
       </div>
       <div class="composer">
         <div class="input-wrap">
