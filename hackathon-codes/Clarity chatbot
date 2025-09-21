@@ -1,4 +1,4 @@
-# chatbot_app.py
+# Clarity.py
 # Clarity: one unlocked assistant with dual persona
 # - Data/Sales/Analytics → Clarity tone
 # - Everything else → Nibbles tone
@@ -21,17 +21,25 @@ log = logging.getLogger("chatbot")
 # Dependencies
 # -----------------------------
 REQUIRED = [
-    "flask", "pandas", "fuzzywuzzy", "python-levenshtein",
-    "requests", "openpyxl", "python-dotenv"
+    "flask",
+    "pandas",
+    "fuzzywuzzy",
+    "python-levenshtein",
+    "requests",
+    "openpyxl",
+    "python-dotenv",
 ]
 def ensure_deps():
     import importlib
     missing = []
     for pkg in REQUIRED:
         mod = "Levenshtein" if pkg == "python-levenshtein" else pkg
-        try: importlib.import_module(mod)
-        except ImportError: missing.append(pkg)
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            missing.append(pkg)
     if missing:
+        log.info(f"[deps] Installing missing packages: {', '.join(missing)}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
 ensure_deps()
 
@@ -42,15 +50,53 @@ import requests
 from dotenv import load_dotenv
 
 # -----------------------------
-# Env
+# Env loading (prioritize bitdeer.env)
 # -----------------------------
-load_dotenv()
-API_URL   = (os.getenv("API_URL") or "").strip()
-API_KEY   = (os.getenv("API_KEY") or "").strip()
-MODEL     = (os.getenv("MODEL") or "openai/gpt-oss-120b").strip()
+def _load_env_priority():
+    """
+    Priority order:
+    1) ENV_FILE env var (absolute or relative path)
+    2) bitdeer.env in script dir
+    3) bitdeer.env in CWD
+    4) bitdeer.env in parent of script dir
+    5) /mnt/data/bitdeer.env
+    6) Fallback: default .env (if present) and system env
+    """
+    candidates: List[Path] = []
+    env_file = os.getenv("ENV_FILE", "").strip()
+    if env_file:
+        candidates.append(Path(env_file).expanduser().resolve())
+
+    here = Path(__file__).resolve().parent
+    candidates += [
+        here / "bitdeer.env",
+        Path.cwd() / "bitdeer.env",
+        here.parent / "bitdeer.env",
+        Path("/mnt/data/bitdeer.env"),
+    ]
+
+    for p in candidates:
+        try:
+            if p and p.exists():
+                load_dotenv(p, override=True)
+                log.info(f"[env] Loaded {p}")
+                return
+        except Exception as e:
+            log.warning(f"[env] Failed loading {p}: {e}")
+
+    load_dotenv(override=False)
+    log.info("[env] Loaded default .env or system environment (no bitdeer.env found)")
+
+_load_env_priority()
+
+# Support both canonical and Bitdeer-prefixed keys
+API_URL = (os.getenv("API_URL") or os.getenv("BITDEER_API_URL") or "").strip()
+API_KEY = (os.getenv("API_KEY") or os.getenv("BITDEER_API_KEY") or os.getenv("BEARER_TOKEN") or "").strip()
+MODEL   = (os.getenv("MODEL")   or os.getenv("BITDEER_MODEL")   or "openai/gpt-oss-120b").strip()
+
 _default_dir = Path("/mnt/data") if Path("/mnt/data").exists() else Path(r"C:\Team_Cashew_Synthetic_Data")
 DATA_DIR  = Path(os.getenv("DATA_DIR", str(_default_dir)))
-COMPANY   = (os.getenv("COMPANY_NAME") or "Cashew4Nuts").strip()  # ← default brand
+COMPANY   = (os.getenv("COMPANY_NAME") or "Cashew4Nuts").strip()  # default brand
 
 ASSISTANT_NAME_CUSTOMER = "Nibbles"
 ASSISTANT_NAME_STAFF    = "Clarity"
@@ -76,10 +122,7 @@ ANALYTICS_WORDS = (
 YEAR_PAT   = re.compile(r"\b(20\d{2})\b")
 RANGE_PAT  = re.compile(r"\bfrom\s+(20\d{2})\s+(?:to|-|–)\s+(20\d{2})\b", re.I)
 
-GREETINGS = {
-    "hi","hello","hey","hiya","yo",
-    "good morning","good afternoon","good evening","morning","afternoon","evening"
-}
+GREETINGS = {"hi","hello","hey","hiya","yo","good morning","good afternoon","good evening","morning","afternoon","evening"}
 
 CATALOG_HINT_WORDS = {
     "have","availability","available","stock","price","cost","sku","item","product",
@@ -99,16 +142,6 @@ def is_generic_greeting(q: str) -> bool:
 
 def looks_like_sku(q: str) -> bool:
     return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_]{5,}$", (q or "").strip()))
-
-def looks_like_catalogue_query(q: str) -> bool:
-    if not q: return False
-    ql = q.lower()
-    if looks_like_sku(q): return True
-    toks = _tokens(ql)
-    if not toks: return False
-    if any(w in ql for w in CATALOG_HINT_WORDS): return True
-    if any(t.isdigit() for t in toks) and any(u in ql for u in ("g","kg","gram","grams")): return True
-    return False
 
 def is_analytics_query(q: str) -> bool:
     if not q: return False
@@ -135,7 +168,7 @@ def make_dashboard_link(query: str, years: Optional[List[int]]=None, period: Opt
 
 def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
     if not (API_URL and API_KEY):
-        return "API not configured. Please check your .env file."
+        return "API not configured. Please check your bitdeer.env (API_URL, API_KEY, MODEL)."
     try:
         sysmsg = {"role":"system","content":"Always answer in plain text only. Do not use Markdown, bold, tables, or special formatting."}
         r = requests.post(
@@ -168,9 +201,10 @@ class DataManager:
         self._load_all()
 
     def _safe_csv(self, path: Path) -> pd.DataFrame:
+        na_vals = ["", " ", "None", "none", "NULL", "null", "NaN", "nan", "N/A", "n/a"]
         for enc in ("utf-8","utf-8-sig","latin-1"):
             try:
-                return pd.read_csv(path, encoding=enc, low_memory=False)
+                return pd.read_csv(path, encoding=enc, low_memory=False, keep_default_na=True, na_values=na_vals)
             except Exception:
                 continue
         return pd.DataFrame()
@@ -190,20 +224,10 @@ class DataManager:
         log.info(f"[load] total CSVs loaded: {count}")
 
 # -----------------------------
-# Safe table getter
-# -----------------------------
-def safe_get_table(dm: DataManager, *names) -> pd.DataFrame:
-    for n in names:
-        df = dm.tables.get(n)
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            return df
-    return pd.DataFrame()
-
-# -----------------------------
-# Sales corpus builder (multi-table, richer synonyms)
+# Column detection helpers
 # -----------------------------
 REV_PAT   = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|line_?total|grand_?total|sales)", re.I)
-PROD_PAT  = re.compile(r"(sku_?description|product|product_?name|item_?name|desc|name|sku|category)", re.I)
+PROD_PAT  = re.compile(r"(sku_?description|product|product_?name|item_?name|desc|name)", re.I)
 DATE_PAT  = re.compile(r"(order_?date|order_?datetime|purchase_?date|purchased?_?at|date|datetime|timestamp|time|created_?at)", re.I)
 SKU_PAT   = re.compile(r"^(sku|item_?sku|sku_?code|item_?code|product_?code)$", re.I)
 
@@ -222,32 +246,37 @@ def _find_sku_col(df: pd.DataFrame) -> Optional[str]:
         if SKU_PAT.match(c): return c
     return None
 
+# -----------------------------
+# Sales table eligibility & harmonization
+# -----------------------------
 def _is_sales_table(name: str, df: pd.DataFrame) -> bool:
-    if df is None or df.empty: return False
-    name_hit = any(k in name for k in ("sales","ecommerce","orders","transactions","purchases"))
-    col_hit  = any(REV_PAT.search(c) for c in df.columns)
-    return name_hit or col_hit
+    """Eligible iff it has a revenue-like column AND (a product-like OR SKU column)."""
+    if df is None or df.empty:
+        return False
+    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount","line_total","grand_total"])
+    prod = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","name","desc"])  # exclude 'category' as product
+    sku  = _find_sku_col(df)
+    return bool(rev and (prod or sku))
 
 def _harmonize_sales_table(name: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    if df is None or df.empty: return None
-    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount","line_total","grand_total"])
-    prod = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","name","desc","sku","category"])
-    dcol = _find_col(df, DATE_PAT, ["order_datetime","order_date","purchase_date","purchased_at","created_at","date","datetime","timestamp","time"])
-    scol = _find_sku_col(df)
+    """Normalize a sales table to columns: revenue, product, sku, date, year, month, source."""
+    if df is None or df.empty:
+        return None
 
-    if not rev: return None
+    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount","line_total","grand_total"])
+    prod = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","name","desc"])
+    dcol = _find_col(df, DATE_PAT, ["order_datetime","order_date","purchase_date","purchased_at","created_at","date","datetime","timestamp","time"])
+    sku  = _find_sku_col(df)
+
+    # Require revenue AND (product or SKU)
+    if not rev or not (prod or sku):
+        return None
+
     out = pd.DataFrame()
     out["revenue"] = pd.to_numeric(df[rev], errors="coerce").fillna(0)
 
-    if scol:
-        out["sku"] = df[scol].astype(str)
-    else:
-        out["sku"] = None
-
-    if prod:
-        out["product"] = df[prod].astype(str)
-    else:
-        out["product"] = out["sku"].astype(str) if scol else None
+    out["sku"] = df[sku].astype(str) if sku else None
+    out["product"] = df[prod].astype(str) if prod else None
 
     if dcol:
         dt = pd.to_datetime(df[dcol], errors="coerce")
@@ -260,6 +289,9 @@ def _harmonize_sales_table(name: str, df: pd.DataFrame) -> Optional[pd.DataFrame
     out["source"] = name
     return out
 
+# -----------------------------
+# Build sales corpus (strict sku_master.sku_description)
+# -----------------------------
 def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
     parts = []
     for name, df in dm.tables.items():
@@ -267,26 +299,56 @@ def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
             h = _harmonize_sales_table(name, df)
             if h is not None and not h.empty:
                 parts.append(h)
+
     if not parts:
         return pd.DataFrame(columns=["revenue","product","sku","date","year","month","source"])
 
     big = pd.concat(parts, ignore_index=True)
 
-    # Prefer full product names from sku_master.csv
+    # Map canonical names strictly from sku_master.sku_description
     sm = dm.tables.get("sku_master")
     if isinstance(sm, pd.DataFrame) and not sm.empty:
-        sm = _normalize_df(sm)
-        sku_col = _find_sku_col(sm) or ("sku" if "sku" in sm.columns else None)
-        desc_col = next((c for c in ("sku_description","product_name","item_name","name","desc") if c in sm.columns), None)
-        if sku_col and desc_col:
-            sm_slice = sm[[sku_col, desc_col]].drop_duplicates(sku_col)
+        sm = _normalize_df(sm.copy())
+
+        # Find SKU column in sku_master (prefer 'sku', else common variants)
+        sku_col = None
+        for c in ("sku", "sku_code", "item_sku", "item_code", "product_code"):
+            if c in sm.columns:
+                sku_col = c
+                break
+        if not sku_col:
+            sku_col = _find_sku_col(sm)
+
+        if sku_col and "sku_description" in sm.columns:
+            sm_slice = sm[[sku_col, "sku_description"]].drop_duplicates(sku_col)
             sm_slice.columns = ["sku", "sku_desc"]
             big = big.merge(sm_slice, on="sku", how="left")
-            # fill/replace product with human-readable description
-            big["product"] = big["product"].where(big["product"].notna() & ~big["product"].str.match(r"^[A-Za-z0-9\-_]+$", na=False), big["sku_desc"])
-            big.drop(columns=["sku_desc"], inplace=True, errors="ignore")
 
-    big["product"] = big["product"].fillna(big["sku"].astype(str))
+            # Prefer canonical description where product is missing or code-like
+            code_like = big["product"].astype(str).str.match(r"^[A-Za-z0-9\-_]+$", na=False)
+            big["product"] = big["product"].where(big["product"].notna() & ~code_like, big["sku_desc"])
+            big.drop(columns=["sku_desc"], inplace=True, errors="ignore")
+            log.info(f"[sku_master] mapped product names using columns sku='{sku_col}', desc='sku_description'")
+        else:
+            log.warning("[sku_master] Missing required columns: need 'sku' (or variant) AND 'sku_description'")
+
+    # Hard clean product field
+    def _clean_str(x):
+        s = ("" if x is None else str(x)).strip()
+        return (None if s.lower() in ("", "none", "nan", "na", "null") else s)
+
+    big["product"] = big["product"].map(_clean_str)
+
+    # Last fallback: if product still null but SKU exists, use SKU
+    big.loc[big["product"].isna() & big["sku"].notna(), "product"] = big["sku"].astype(str)
+
+    # Drop anything without a resolvable product — prevents “None” from entering groups
+    before = len(big)
+    big = big[big["product"].notna()]
+    dropped = before - len(big)
+    if dropped > 0:
+        log.info(f"[sales] dropped {dropped} rows with unresolved product")
+
     return big
 
 # -----------------------------
@@ -329,7 +391,7 @@ def parse_top_bottom(q: str) -> Tuple[Optional[str], int]:
     return None, 0
 
 # -----------------------------
-# Product name guess
+# Product name guess (optional helpers)
 # -----------------------------
 def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Optional[str]:
     candidates: List[str] = []
@@ -372,7 +434,8 @@ class CustomerTools:
         self.dm = dm
 
     def faq_lookup(self, q: str) -> str:
-        faq = safe_get_table(self.dm, "faqs", "faq")
+        faq = self.dm.tables.get("faqs") or self.dm.tables.get("faq") or pd.DataFrame()
+        faq = _normalize_df(faq.copy()) if not faq.empty else faq
         if faq.empty or not {"question","answer"} <= set(faq.columns):
             return ""
         best, score = None, 0
@@ -413,20 +476,22 @@ class AnalyticsTools:
 
     def top_bottom(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
         intent, n = parse_top_bottom(q)
-        if not intent: return None
+        if not intent:
+            return None
         years, y_min, y_max = parse_years(q)
         months, period = parse_period(q)
 
         scope = self._scoped(self.sales, years, months)
+        # Ensure product present & non-empty
+        scope = scope[scope["product"].notna() & (scope["product"].astype(str).str.strip() != "")]
         if scope.empty:
             label = (period or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
             return (f"No rows found for{label or ' specified period'}.", years or [], period, None)
 
-        grp_key = "product" if scope["product"].notna().sum() else ("sku" if "sku" in scope.columns else "product")
-        agg = scope.groupby(grp_key, dropna=False)["revenue"].sum().sort_values(ascending=False)
-        sel = agg.head(n) if intent=="top" else agg.tail(n)
+        agg = scope.groupby("product")["revenue"].sum().sort_values(ascending=False)
+        sel = agg.head(n) if intent == "top" else agg.tail(n)
         title = f"{intent.capitalize()} {n} products by revenue"
-        parts=[]
+        parts = []
         if period: parts.append(period)
         if years:  parts.append(str(y_min) if y_min==y_max else f"{y_min}-{y_max}")
         tail = f" ({', '.join(parts)})" if parts else ""
