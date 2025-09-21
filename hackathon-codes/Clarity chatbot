@@ -12,30 +12,16 @@ from string import Template
 from typing import Dict, List, Optional, Tuple
 
 # -----------------------------
-# Logging
+# Logging (define BEFORE env uses it)
 # -----------------------------
-...
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("clarity")
 
-def looks_like_sku(q: str) -> bool:
-    return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_]{5,}$", (q or "").strip()))
-
-def looks_like_catalogue_query(q: str) -> bool:
-    if not q: return False
-    ql = q.lower()
-    if looks_like_sku(q): return True
-    toks = _tokens(ql)
-    if not toks: return False
-    if any(w in ql for w in CATALOG_HINT_WORDS): return True
-    if any(t.isdigit() for t in toks) and any(u in ql for u in ("g","kg","gram","grams")): return True
-    return False
-
-def is_analytics_query(q: str) -> bool:
-    if not q: return False
-    ql = q.lower()
-    return any(w in ql for w in (
-        "sales","revenue","profit","roas","kpi","net margin","inventory days","sell-through","turnover","forecast",
-        "yoy","mom","qoq","market share","campaign roi","cohort","ltv","cac","conversion rate"
-    ))
+import pandas as pd
+from flask import Flask, request, jsonify, render_template_string
+from fuzzywuzzy import fuzz
+import requests
+from dotenv import load_dotenv
 
 # -----------------------------
 # Dependencies
@@ -89,7 +75,7 @@ API_KEY   = (os.getenv("API_KEY") or "").strip()
 MODEL     = (os.getenv("MODEL") or "openai/gpt-oss-120b").strip()
 _default_dir = Path("/mnt/data") if Path("/mnt/data").exists() else Path(r"C:\Team_Cashew_Synthetic_Data")
 DATA_DIR  = Path(os.getenv("DATA_DIR", str(_default_dir)))
-COMPANY   = (os.getenv("COMPANY_NAME") or "Cashew4Nuts").strip()  # ← default brand
+COMPANY   = (os.getenv("COMPANY_NAME") or "Cashew4Nuts").strip()
 
 ASSISTANT_NAME_CUSTOMER = "Nibbles"
 ASSISTANT_NAME_STAFF    = "Clarity"
