@@ -1,20 +1,23 @@
-# nibbles_team_cashew_app.py — Patched 0.2
+# Nibbles.py — Version 0.2.7 (no stock levels in customer replies)
 # Customer-facing chatbot (Nibbles) with Clarity-style data lookup
 # - Friendly, data-grounded answers from CSV/Excel/Docx
 # - Translation-first (LLM) with offline fallback; no hallucinated facts
 # - bitdeer.env loader for MODEL, API_URL, API_KEY
-# - Product index built strictly from sku_master.sku_description (when present)
+# - Product index built from sku_master description-like columns (tolerant)
 # - Optional staff analytics behind "Staff query:"
 # - LLM intent detection + empathetic, localized style (facts remain from CSVs)
-# - Size-aware exact-match price/stock lookup (e.g., “150g”)
-# - FIXES 0.2: UI-safe sanitizer prevents truncated foreign-language replies;
-#              consistent healthy/low-salt/low-fat suggestions from sku_master claims;
-#              better small-talk routing for “healthy options?”
+# - Size-aware exact-match price lookup (e.g., “150g”)
+# - FIXES 0.2: UI-safe sanitizer prevents truncated foreign-language replies
+# - FIXES 0.2.1 (JP): カタカナ mappings, non-product token stripping, size token kept
+# - FIXES 0.2.2 (SKU ingest): tolerant description-column detection; no SKU code required
+# - FIXES 0.2.3: Indentation fix in DataManager.__init__
+# - FIXES 0.2.5: Pure-greeting detection, hard intent overrides, list-preserving localized replies
+# - FIXES 0.2.6: Stock privacy buckets (later superseded)
+# - FIXES 0.2.7: **Do not mention stock levels at all** in customer path (no counts, no buckets)
 
-import os, re, sys, subprocess, logging, uuid, json
+import os, re, sys, subprocess, logging, json
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
-from datetime import datetime, timedelta
 from string import Template
 
 # -----------------------------
@@ -127,7 +130,7 @@ def _sanitize_for_ui(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
 
 # -----------------------------
-# LLM (translation-only for facts; style/intent too) + robust fallback
+# LLM (translation only + style) with robust fallback
 # -----------------------------
 def _call_llm(system_prompt: str, user_text: str, max_tokens=400) -> str:
     if not (API_URL and API_KEY and MODEL):
@@ -186,18 +189,16 @@ KM_KH   = re.compile(r'[\u1780-\u17FF]')
 MY_MM   = re.compile(r'[\u1000-\u109F]')
 VI_DIAC = re.compile(r'[ăâđêôơưĂÂĐÊÔƠƯ]')
 
-# Expanded token sets (MS/TL with greetings)
 TL_TOKENS = {"kumusta","kamusta","magkano","salamat","po","paano","meron","wala","balik","utos","paki"}
 MS_ID_TOKENS = {"apa","boleh","pesan","penghantaran","pengiriman","informasi","barang",
                 "kacang","terima kasih","selamat","harga","ada","beli","salam",
                 "assalamualaikum","assalamu'alaikum","assalamu’alaikum","assalamu alaikum",
                 "asalamualaikum","assalmualaikum"}
 
-# Greeting tokens
 GREET_TOKENS = {
     "zh": ["你好","您好","嗨","哈喽","早上好","下午好","晚上好"],
     "ja": ["こんにちは","こんばんは","おはよう","やあ","もしもし","ハロー"],
-    "ko": ["안녕하세요","안녕","하이","안녕하십니까"],
+    "ko": ["안녕하세요","안녕","ハイ","안녕하십니까"],
     "th": ["สวัสดี","หวัดดี"],
     "vi": ["xin chào","chào bạn","chào"],
     "ms": ["hai","halo","selamat pagi","selamat petang","selamat malam","salam",
@@ -243,54 +244,45 @@ def _normalize_sizes(text: str) -> str:
     s = re.sub(r'(\d+)\s*g\b', r'\1g', s, flags=re.I)
     return s
 
-# Offline rules for translating *keywords* to English if LLM fails
 _RULE_MAP = {
     "zh": {
-        "多少钱":"price", "价格":"price", "价钱":"price", "买":"buy", "购买":"buy",
-        "有吗":"do you have", "有沒有":"do you have", "运费":"shipping","配送":"delivery","送货":"delivery","退款":"refund","退货":"return",
+        "多少钱":"price","价格":"price","价钱":"price","买":"buy","购买":"buy",
+        "有吗":"do you have","有沒有":"do you have","运费":"shipping","配送":"delivery","送货":"delivery","退款":"refund","退货":"return",
         "花生":"peanuts","腰果":"cashews","开心果":"pistachios","核桃":"walnuts","杏仁":"almonds","榛子":"hazelnuts","夏威夷果":"macadamia",
         "蜂蜜":"honey","烤":"roasted","盐味":"salted","無鹽":"unsalted","无盐":"unsalted","烘焙":"baked","自然":"natural",
         "你好":"hello","您好":"hello","嗨":"hello","哈喽":"hello",
-        # health extras
-        "低盐":"low salt","少盐":"low salt","减盐":"low salt","低鈉":"low sodium",
-        "低脂":"low fat","低脂肪":"low fat","少油":"low fat","無糖":"no sugar","无糖":"no sugar"
+        "低盐":"low salt","少盐":"low salt","减盐":"low salt","低鈉":"low sodium","低脂":"low fat","低脂肪":"low fat","少油":"low fat","無糖":"no sugar","无糖":"no sugar"
     },
     "ja": {
         "いくら":"price","値段":"price","買":"buy","購入":"buy","ありますか":"do you have",
         "配送":"delivery","送料":"shipping","返品":"return","返金":"refund",
-        "ピスタチオ":"pistachios","アーモンド":"almonds","カシューナッツ":"cashews","くるみ":"walnuts","落花生":"peanuts","ヘーゼルナッツ":"hazelnuts","マカダミア":"macadamia",
+        "ピスタチオ":"pistachios","アーモンド":"almonds","カシューナッツ":"cashews","くるみ":"walnuts","落花生":"peanuts",
+        "ヘーゼルナッツ":"hazelnuts","マカダミア":"macadamia",
         "蜂蜜":"honey","ロースト":"roasted","無塩":"unsalted","塩味":"salted","焼き":"baked","ナチュラル":"natural",
         "こんにちは":"hello","こんばんは":"hello","おはよう":"hello","やあ":"hello","もしもし":"hello",
-        # health extras
-        "減塩":"low salt","低塩":"low salt","塩分控えめ":"low salt",
-        "低脂肪":"low fat","低脂":"low fat","砂糖不使用":"no sugar"
+        "ピーナッツ":"peanuts","ピーナツ":"peanuts","ローストピーナッツ":"roasted peanuts","ロースト ピーナッツ":"roasted peanuts",
+        "減塩":"low salt","低塩":"low salt","塩分控えめ":"low salt","低脂肪":"low fat","低脂":"low fat","砂糖不使用":"no sugar"
     },
     "ko": {
         "가격":"price","얼마":"price","구매":"buy","사고 싶":"buy","있나요":"do you have","재고":"stock",
         "배송":"delivery","환불":"refund","반품":"return","배송비":"shipping",
         "피스타치오":"pistachios","아몬드":"almonds","캐슈넛":"cashews","호두":"walnuts","땅콩":"peanuts","헤이즐넛":"hazelnuts","마카다미아":"macadamia",
         "허니":"honey","구운":"roasted","무염":"unsalted","소금":"salted","베이크드":"baked","내추럴":"natural",
-        "안녕하세요":"hello","안녕":"hello",
-        # health extras
-        "저염":"low salt","저나트륨":"low sodium","무염":"unsalted","저지방":"low fat","무가당":"no sugar"
+        "안녕하세요":"hello","안녕":"hello","저염":"low salt","저나트륨":"low sodium","무염":"unsalted","저지방":"low fat","무가당":"no sugar"
     },
     "th": {
         "ราคา":"price","เท่าไหร่":"price","ซื้อ":"buy","มีไหม":"do you have","สต็อก":"stock",
         "จัดส่ง":"delivery","ค่าส่ง":"shipping","คืนเงิน":"refund","คืนสินค้า":"return",
         "พิสตาชิโอ":"pistachios","อัลมอนด์":"almonds","เม็ดมะม่วง":"cashews","วอลนัท":"walnuts","ถั่วลิสง":"peanuts","เฮเซลนัท":"hazelnuts","แมคคาเดเมีย":"macadamia",
         "น้ำผึ้ง":"honey","อบ":"roasted","ไม่เค็ม":"unsalted","เค็ม":"salted","ธรรมชาติ":"natural",
-        "สวัสดี":"hello","หวัดดี":"hello",
-        # health extras
-        "โซเดียมต่ำ":"low sodium","ลดเกลือ":"low salt","ไขมันต่ำ":"low fat","ไม่ใส่น้ำตาล":"no sugar"
+        "สวัสดี":"hello","หวัดดี":"hello","โซเดียมต่ำ":"low sodium","ลดเกลือ":"low salt","ไขมันต่ำ":"low fat","ไม่ใส่น้ำตาล":"no sugar"
     },
     "vi": {
         "giá":"price","bao nhiêu":"price","mua":"buy","có không":"do you have","còn hàng":"stock",
         "giao hàng":"delivery","vận chuyển":"shipping","hoàn tiền":"refund","trả hàng":"return",
         "hạt dẻ cười":"pistachios","hạnh nhân":"almonds","hạt điều":"cashews","óc chó":"walnuts","đậu phộng":"peanuts","lạc":"peanuts","hazelnut":"hazelnuts","mắc ca":"macadamia",
         "mật ong":"honey","rang":"roasted","không muối":"unsalted","mặn":"salted","nướng":"baked","tự nhiên":"natural",
-        "xin chào":"hello","chào":"hello",
-        # health extras
-        "ít muối":"low salt","giảm muối":"low salt","ít béo":"low fat","không đường":"no sugar","thấp natri":"low sodium"
+        "xin chào":"hello","chào":"hello","ít muối":"low salt","giảm muối":"low salt","ít béo":"low fat","không đường":"no sugar","thấp natri":"low sodium"
     },
     "ms": {
         "harga":"price","berapa":"price","beli":"buy","ada":"do you have","stok":"stock",
@@ -298,7 +290,6 @@ _RULE_MAP = {
         "pistachio":"pistachios","badam":"almonds","kacang mete":"cashews","kacang walnut":"walnuts","kacang tanah":"peanuts","hazelnut":"hazelnuts","macadamia":"macadamia",
         "madu":"honey","panggang":"roasted","tanpa garam":"unsalted","masin":"salted","bakar":"baked","semula jadi":"natural",
         "hai":"hello","halo":"hello","selamat pagi":"hello","selamat petang":"hello","selamat malam":"hello","salam":"hello",
-        # health extras
         "rendah garam":"low salt","kurang garam":"low salt","rendah natrium":"low sodium","rendah lemak":"low fat","tanpa gula":"no sugar"
     },
     "tl": {
@@ -306,9 +297,7 @@ _RULE_MAP = {
         "paghahatid":"delivery","shipping":"shipping","refund":"refund","return":"return",
         "pistachio":"pistachios","almond":"almonds","kasuy":"cashews","nogales":"walnuts","mani":"peanuts","hazelnut":"hazelnuts","macadamia":"macadamia",
         "pulot":"honey","inihaw":"roasted","walang asin":"unsalted","maalat":"salted","baked":"baked","natural":"natural",
-        "kumusta":"hello","kamusta":"hello","hello":"hello","hi":"hello",
-        # health extras
-        "mababang asin":"low salt","walang asin":"unsalted","mababang taba":"low fat","walang asukal":"no sugar"
+        "kumusta":"hello","kamusta":"hello","hello":"hello","hi":"hello","mababang asin":"low salt","walang asin":"unsalted","mababang taba":"low fat","walang asukal":"no sugar"
     },
 }
 
@@ -324,10 +313,11 @@ def to_english_keywords(text: str, user_lang: str) -> str:
     rule = ""
     if user_lang in _RULE_MAP:
         tokens = []
+        s_low = low.lower()
         for k, v in _RULE_MAP[user_lang].items():
-            if k in low.lower():
+            if k in s_low:
                 tokens.append(v)
-        sizes = re.findall(r'\b\d+(?:g|kg|ml)\b', low.lower())
+        sizes = re.findall(r'\b\d+(?:g|kg|ml)\b', s_low)
         if sizes: tokens.extend(sizes)
         ascii_words = re.findall(r'[a-zA-Z0-9]{2,}', low)
         if ascii_words: tokens.extend(ascii_words)
@@ -357,13 +347,44 @@ def from_english_plain(text: str, user_lang: str) -> str:
     prefix = _APOLOGY.get(user_lang, "Sorry, translation unavailable. English reply:")
     return _sanitize_for_ui(f"{prefix}\n{text}")
 
-def _is_greeting(raw: str, lang: str) -> bool:
-    toks = GREET_TOKENS.get(lang, []) + GREET_TOKENS["en"]
+# -----------------------------
+# Greeting detection (pure greetings only)
+# -----------------------------
+_PURE_EN_GREETING_RE = re.compile(
+    r"^(hi|hello|hey|thanks|thank you|bye|goodbye|good (morning|afternoon|evening))!?\.?$",
+    re.I
+)
+
+def _is_pure_greeting(raw: str, lang: str) -> bool:
+    """
+    Treat messages as greetings only if the WHOLE message is a greeting/smalltalk.
+    If it has question marks, digits, or request keywords, it's NOT a greeting.
+    Prevents 'hi' inside 'pistachios' from triggering greeting.
+    """
+    if not raw.strip():
+        return False
     low = raw.strip().lower()
-    return any(tok in low for tok in toks)
+
+    # disqualify real questions/asks
+    if "?" in low or re.search(r"\d", low):
+        return False
+    if re.search(r"(price|how much|cost|in stock|stock|available|availability|do you have|have you got|order|shipping|delivery)", low):
+        return False
+
+    # EN: whole-message match
+    if _PURE_EN_GREETING_RE.match(low):
+        return True
+
+    # Non-EN: allow exact token matches (short messages only)
+    toks = set(GREET_TOKENS.get(lang, []) + GREET_TOKENS["en"])
+    stripped = re.sub(r"[!。！？\.\s]+$", "", low)
+    if len(stripped) <= 24 and stripped in toks:
+        return True
+
+    return False
 
 # -----------------------------
-# Intent detection + styled localization via LLM
+# Intent detection
 # -----------------------------
 INTENT_LABELS = [
     "GREET", "SMALLTALK", "PRICE", "STOCK",
@@ -386,38 +407,47 @@ def _parse_json_loose(s: str) -> Dict[str, Any]:
 def classify_intent(en_text: str) -> Tuple[str, str]:
     """
     Returns (intent, sentiment). Sentiment in {angry, frustrated, confused, neutral, positive}.
-    Uses LLM with regex fallback.
+    Priority rules: price/stock/order/refund/shipping ALWAYS override LLM.
     """
+    t = (en_text or "").lower().strip()
+
+    # Priority signals (override LLM)
+    if re.search(r"\b(price|how much|cost)\b", t):
+        pri = "PRICE"
+    elif re.search(r"\b(in stock|stock|available|availability)\b", t) or re.search(r"\b(do you have|have you got)\b", t):
+        pri = "STOCK"
+    elif re.search(r"\b(track|tracking|status|where.*order|order\s*status)\b", t):
+        pri = "ORDER_STATUS"
+    elif re.search(r"\b(refund|return|replace)\b", t):
+        pri = "REFUND_RETURN"
+    elif re.search(r"\b(ship|shipping|deliver|delivery|eta|arriv)\w*\b", t):
+        pri = "SHIPPING_INFO"
+    elif len(t.split()) <= 6:
+        pri = "PRODUCT_SEARCH"
+    else:
+        pri = ""
+
+    sent = "angry" if _ANGRY_WORDS.search(t) else ("confused" if _CONFUSED_WORDS.search(t) else "neutral")
+    if pri:
+        return pri, sent
+
     sys_prompt = (
         "You are an intent classifier for a customer-service chat about snacks/e-commerce. "
         f"Choose exactly one intent from: {', '.join(INTENT_LABELS)}. "
         "Also set sentiment to one of: angry, frustrated, confused, neutral, positive. "
-        "Return ONLY JSON like {\"intent\":\"PRICE\",\"sentiment\":\"neutral\"}. English only."
+        'Return ONLY JSON like {"intent":"PRICE","sentiment":"neutral"}. English only.'
     )
     raw = _call_llm(sys_prompt, en_text, max_tokens=60)
     data = _parse_json_loose(raw) if raw else {}
     intent = str(data.get("intent","")).upper().strip()
-    sentiment = str(data.get("sentiment","")).lower().strip()
-
-    # Fallback rules if LLM unavailable/unclear
-    t = en_text.lower()
-    if not intent or intent not in INTENT_LABELS:
-        if re.search(r"\b(price|how much|cost)\b", t): intent = "PRICE"
-        elif re.search(r"\b(in stock|stock|available|availability)\b", t): intent = "STOCK"
-        elif re.search(r"\b(track|tracking|status|where.*order|order status)\b", t): intent = "ORDER_STATUS"
-        elif re.search(r"\b(refund|return|replace)\b", t): intent = "REFUND_RETURN"
-        elif re.search(r"\b(ship|shipping|deliver|delivery|eta|arrive|arrival)\b", t): intent = "SHIPPING_INFO"
-        elif re.search(r"\b(hi|hello|hey|thanks|thank you|bye|goodbye)\b", t): intent = "GREET"
-        elif len(t.split()) <= 6: intent = "PRODUCT_SEARCH"
-        else: intent = "OTHER"
-
-    if not sentiment:
-        if _ANGRY_WORDS.search(t): sentiment = "angry"
-        elif _CONFUSED_WORDS.search(t): sentiment = "confused"
-        else: sentiment = "neutral"
-
+    sentiment = str(data.get("sentiment","")).lower().strip() or sent
+    if intent not in INTENT_LABELS:
+        intent = "OTHER"
     return intent, sentiment
 
+# -----------------------------
+# Style/localize with LLM (no new facts)
+# -----------------------------
 def style_localize_reply(
     facts_en: str,
     user_lang: str,
@@ -425,11 +455,6 @@ def style_localize_reply(
     sentiment: str,
     original_user_text: str = ""
 ) -> str:
-    """
-    Ask the LLM to rewrite + localize the message in the user's language with
-    an appropriate tone, WITHOUT adding/changing facts.
-    Falls back to plain translation if LLM fails.
-    """
     if not facts_en.strip():
         facts_en = "I couldn’t find that in our files. Please share more details and I’ll check again."
 
@@ -443,6 +468,7 @@ def style_localize_reply(
         "4) If intent is ORDER_STATUS or REFUND_RETURN and needed info is missing, politely ask for the order number and key details (no policy claims).\n"
         "5) If intent is PRICE/STOCK/PRODUCT_SEARCH, be helpful, but do not add products beyond what's in FACTS.\n"
         "6) Match sentiment: for angry/frustrated, start with a brief apology and assurance; for confused, give clear guidance.\n"
+        "7) If FACTS contains a list (lines starting with '-' or '•' or numbered items), KEEP the list structure and items exactly; do not summarize or drop items. You may add one short lead-in sentence in the user's language.\n"
     )
     user_msg = (
         f"USER_LANGUAGE: {user_lang}\n"
@@ -455,14 +481,11 @@ def style_localize_reply(
     return _sanitize_for_ui(out) if out else _sanitize_for_ui(from_english_plain(facts_en, user_lang))
 
 # -----------------------------
-# Clarity-style column detectors
+# Column detectors
 # -----------------------------
 REV_PAT   = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|line_?total|grand_?total|sales)", re.I)
 PROD_PAT  = re.compile(r"(sku_?description|product|product_?name|item_?name|desc|name)", re.I)
-DATE_PAT  = re.compile(r"(order_?date|order_?datetime|purchase_?date|purchased?_?at|date|datetime|timestamp|time|created_?at)", re.I)
-SKU_PAT   = re.compile(r"^(sku|item_?sku|sku_?code|item_?code|product_?code)$", re.I)
 PRICE_PAT = re.compile(r"(unit_?price|price|list_?price|selling_?price|sgd|amount|unit\s*price)", re.I)
-STOCK_PAT = re.compile(r"(stock|on_?hand|inventory|qty|quantity|available)", re.I)
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty: return df
@@ -483,12 +506,6 @@ def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]]
             if c in df.columns: return c
     for c in df.columns:
         if regex.search(str(c)): return c
-    return None
-
-def _find_sku_col(df: pd.DataFrame) -> Optional[str]:
-    if df is None or df.empty: return None
-    for c in df.columns:
-        if SKU_PAT.match(str(c)): return c
     return None
 
 # -----------------------------
@@ -560,22 +577,39 @@ class DataManager:
 
     def _build_product_index(self):
         names = set()
+
+        # sku_master
         sku = self.tables.get("sku_master", pd.DataFrame())
         if not sku.empty:
             sku = _normalize_df(sku)
-            sku_code = _find_sku_col(sku) or ("sku" if "sku" in sku.columns else None)
-            if sku_code and "sku_description" in sku.columns:
-                names.update(sku["sku_description"].astype(str).dropna().tolist())
+            desc_col = next((c for c in ["sku_description","product_name","item_name","description","desc","name"] if c in sku.columns), None) \
+                       or _find_col(sku, PROD_PAT)
+            if desc_col:
+                vals = sku[desc_col].astype(str).dropna().tolist()
+                names.update(vals)
+                try:
+                    sample_hit = [v for v in vals if re.search(r"(pistachio|ピスタチオ|peanut|ピーナッツ|almond|アーモンド)", str(v), re.I)][:5]
+                except Exception:
+                    sample_hit = []
+                log.info(f"[index][sku_master] desc_col='{desc_col}' rows={len(vals)}; sample_hits={sample_hit}")
+            else:
+                log.info("[index][sku_master] No description-like column found")
+
+        # sales_transactions (optional enrichment)
         sales = self.tables.get("sales_transactions", pd.DataFrame())
         if not sales.empty:
             sales = _normalize_df(sales)
             desc = _find_col(sales, PROD_PAT, ["sku_description","product_name","item_name","description","desc","name"])
             if desc:
                 names.update(sales[desc].astype(str).dropna().tolist())
+
+        # catalogue_flat (optional)
         cat = self.tables.get("catalogue_flat", pd.DataFrame())
         if not cat.empty:
             col = next((c for c in cat.columns if "name" in c.lower()), cat.columns[0])
             names.update(cat[col].astype(str).dropna().tolist())
+
+        # cleanup
         clean = []
         for n in names:
             s = str(n).strip()
@@ -629,7 +663,7 @@ class DataManager:
         self._build_product_index()
 
 # -----------------------------
-# Customer QA (friendly, grounded)
+# Customer QA
 # -----------------------------
 FRIENDLY_GREETS = [
     "Hi there! Happy to help.",
@@ -666,6 +700,13 @@ class CustomerQA:
     def _extract_size_token(self, s: str) -> Optional[str]:
         m = re.search(r'\b(\d{2,4})\s*g\b', s.lower())
         return (m.group(1) + "g") if m else None
+
+    NON_PRODUCT_TOKENS_RE = re.compile(
+        r"\b(price|how much|cost|in stock|stock|available|availability|do you have|have you got|buy|order|status|shipping|delivery)\b",
+        re.I
+    )
+    def _strip_non_product_tokens(self, s: str) -> str:
+        return self.NON_PRODUCT_TOKENS_RE.sub(" ", s).strip()
 
     def smalltalk(self, q: str) -> str:
         ql = q.lower()
@@ -704,58 +745,9 @@ class CustomerQA:
         return _find_col(df, PROD_PAT)
 
     def _price_col(self, df: pd.DataFrame) -> Optional[str]:
-        c = _find_col(df, PRICE_PAT, ["unit_price","price","selling_price"])
-        return c
+        return _find_col(df, PRICE_PAT, ["unit_price","price","selling_price"])
 
-    def _stock_col(self, df: pd.DataFrame) -> Optional[str]:
-        return _find_col(df, STOCK_PAT, ["stock","on_hand","qty","inventory"])
-
-    # ---- NEW: attribute/claims scanning for healthy/low-salt/low-fat ----
-    ATTR_COL_RE = re.compile(r"(diet|health|tag|attrib|attribute|property|claim|note|nutrition|salt|sodium|fat|sugar|oil|seasoning)", re.I)
-
-    def _attribute_suggestions(self, keywords: List[str], limit=10) -> List[str]:
-        sku = self._sku_table()
-        if sku.empty:
-            return []
-        desc = self._sku_desc_col(sku)
-        cols = [desc] if desc else []
-        for c in sku.columns:
-            if c != desc and self.ATTR_COL_RE.search(str(c)):
-                cols.append(c)
-        if not cols:
-            return []
-        low = sku.copy()
-        for c in cols:
-            low[c] = low[c].astype(str).str.casefold()
-        hits = set()
-        for _, row in low[cols].iterrows():
-            blob = " ".join(str(row[c]) for c in cols)
-            if any(kw in blob for kw in keywords):
-                name = row[desc] if desc else None
-                if name:
-                    hits.add(str(name).strip())
-        key = keywords[0] if keywords else ""
-        scored = [(n, fuzz.WRatio(n.lower(), key)) for n in hits]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [n for n,_ in scored][:limit]
-
-    HEALTH_SYNONYMS = {
-        "healthy": ["healthy","healthier","light","lighter","natural","baked","air fried","air-fried","no sugar","unsalted","lightly salted"],
-        "low salt": ["low salt","low-salt","reduced salt","less salt","low sodium","reduced sodium","lower sodium","unsalted","no salt","salt free","salt-free"],
-        "low fat": ["low fat","low-fat","reduced fat","less fat","lighter fat","lite","baked"]
-    }
-
-    def _health_theme_and_keywords(self, q: str) -> Optional[Tuple[str, List[str]]]:
-        ql = q.lower()
-        if any(tok in ql for tok in self.HEALTH_SYNONYMS["low salt"]):
-            return ("low-salt", self.HEALTH_SYNONYMS["low salt"])
-        if any(tok in ql for tok in self.HEALTH_SYNONYMS["low fat"]):
-            return ("low-fat", self.HEALTH_SYNONYMS["low fat"])
-        if "healthy" in ql or "healthier" in ql:
-            return ("healthy", self.HEALTH_SYNONYMS["healthy"])
-        return None
-
-    # --- Size-aware exact matching for price/stock ---
+    # --- Size-aware exact matching for price ---
     def lookup_price(self, query_en: str) -> Optional[str]:
         sku = self._sku_table()
         if sku.empty: return None
@@ -763,24 +755,24 @@ class CustomerQA:
         price_col = self._price_col(sku)
         if not desc or not price_col: return None
 
-        qn = self._norm_name(query_en)
         size_token = self._extract_size_token(query_en)
+        q_clean = self._strip_non_product_tokens(query_en)
 
-        # 1) Exact name match first
-        exact = sku[self._norm_name_series(sku[desc]) == qn]
+        # 1) Exact name match (normalized) on cleaned text
+        exact = sku[self._norm_name_series(sku[desc]) == self._norm_name(q_clean)]
         if not exact.empty:
             price = pd.to_numeric(exact.iloc[0][price_col], errors="coerce")
             if pd.notna(price):
                 return f"{exact.iloc[0][desc]}: SGD {float(price):,.2f}"
 
-        # 2) Otherwise, fuzzy but filter by size if specified
-        hits = self.product_matches(query_en, limit=12)
+        # 2) Fuzzy with size preference
+        hits = self.product_matches(q_clean, limit=12)
         if size_token:
             hits = [h for h in hits if size_token in h.lower()]
         if not hits:
             return None
         if size_token:
-            hits = hits[:1]  # most precise when size present
+            hits = hits[:1]
 
         sku = sku.copy()
         sku[price_col] = pd.to_numeric(sku[price_col], errors="coerce")
@@ -798,50 +790,6 @@ class CustomerQA:
 
         out = ["Here are matching items and prices:"]
         out += [f"- {n}: SGD {p:,.2f}" for n, p in rows]
-        return "\n".join(out)
-
-    def lookup_stock(self, query_en: str) -> Optional[str]:
-        sku = self._sku_table()
-        if sku.empty: return None
-        desc = self._sku_desc_col(sku)
-        stock_col = self._stock_col(sku)
-        if not desc or not stock_col: return None
-
-        qn = self._norm_name(query_en)
-        size_token = self._extract_size_token(query_en)
-
-        # 1) Exact name match first
-        exact = sku[self._norm_name_series(sku[desc]) == qn]
-        if not exact.empty:
-            stock = pd.to_numeric(exact.iloc[0][stock_col], errors="coerce")
-            if pd.notna(stock):
-                return f"{exact.iloc[0][desc]}: stock {int(stock)} units (subject to change)."
-
-        # 2) Otherwise, fuzzy + size filter
-        hits = self.product_matches(query_en, limit=12)
-        if size_token:
-            hits = [h for h in hits if size_token in h.lower()]
-        if not hits:
-            return None
-        if size_token:
-            hits = hits[:1]
-
-        sku = sku.copy()
-        sku[stock_col] = pd.to_numeric(sku[stock_col], errors="coerce")
-        rows = []
-        for h in hits:
-            m = sku[self._norm_name_series(sku[desc]) == self._norm_name(h)]
-            if not m.empty and pd.notna(m.iloc[0][stock_col]):
-                rows.append((m.iloc[0][desc], int(m.iloc[0][stock_col])))
-
-        if not rows:
-            return None
-        if len(rows) == 1:
-            n, s = rows[0]
-            return f"{n}: stock {s} units (subject to change)."
-
-        out = ["Availability (subject to change):"]
-        out += [f"- {n}: {s} units" for n, s in rows]
         return "\n".join(out)
 
     # --- Main English answer builder (facts only) ---
@@ -869,41 +817,48 @@ class CustomerQA:
         if any(tok in q for tok in ["price","how much","cost"]):
             p = self.lookup_price(raw_en)
             if p: return p
-            hits = self.product_matches(raw_en)
+            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
             if hits:
                 return "I found these items. Tell me which one and I’ll check price:\n" + "\n".join(f"- {h}" for h in hits)
 
-        # ---- NEW: Healthy / diet styles FIRST (before stock) ----
-        health = self._health_theme_and_keywords(q)
-        if health:
-            theme, kws = health
-            picks = self._attribute_suggestions(kws, limit=8)
-            if not picks:
-                seeds = kws + ["baked","unsalted","natural"]
-                seen = []
-                for seed in seeds:
-                    for m in self.product_matches(seed, limit=12):
-                        if m not in seen:
-                            seen.append(m)
-                        if len(seen) >= 8:
-                            break
-                picks = seen
-            if picks:
+        # Healthy / diet styles
+        HEALTH_SYNONYMS = {
+            "healthy": ["healthy","healthier","light","lighter","natural","baked","air fried","air-fried","no sugar","unsalted","lightly salted"],
+            "low salt": ["low salt","low-salt","reduced salt","less salt","low sodium","reduced sodium","lower sodium","unsalted","no salt","salt free","salt-free"],
+            "low fat": ["low fat","low-fat","reduced fat","less fat","lighter fat","lite","baked"]
+        }
+        ql = q.lower()
+        theme = None
+        for k, arr in HEALTH_SYNONYMS.items():
+            if any(tok in ql for tok in arr):
+                theme = k; break
+        if theme:
+            seeds = HEALTH_SYNONYMS[theme] + ["baked","unsalted","natural"]
+            seen = []
+            for seed in seeds:
+                for m in self.product_matches(seed, limit=12):
+                    if m not in seen:
+                        seen.append(m)
+                    if len(seen) >= 8:
+                        break
+                if len(seen) >= 8:
+                    break
+            if seen:
                 label = "healthier" if theme == "healthy" else theme
-                return "Here are some " + label + " picks:\n" + "\n".join(f"- {p}" for p in picks) + "\nTell me which one to check price or stock."
+                return "Here are some " + label + " picks:\n" + "\n".join(f"- {p}" for p in seen) + "\nTell me which one to check price."
             else:
                 return "I couldn’t find products tagged with those dietary preferences in the CSVs. If you name a product, I’ll check it."
 
-        # Availability / stock
+        # Availability / stock (NO STOCK LEVELS SHOWN)
         if any(tok in q for tok in ["in stock","stock","available","availability","do you have","have you got"]):
-            s = self.lookup_stock(raw_en)
-            if s: return s
-            hits = self.product_matches(raw_en)
+            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
             if hits:
+                # If the user asked for a specific product, confirm carry without levels.
+                # Otherwise list nearby matches.
                 return (
-                    f"{FRIENDLY_OK[0]} We carry these matches:\n" +
+                    "We carry these matches:\n" +
                     "\n".join(f"- {h}" for h in hits[:10]) +
-                    "\nIf you’re after a specific size or flavor, tell me and I’ll narrow it down."
+                    "\nTell me which one to check price."
                 )
             return f"{FRIENDLY_SORRY[0]} I couldn’t find that product in our catalogue."
 
@@ -944,12 +899,12 @@ class CustomerQA:
             a = faq_answer(raw_en, "allergen", "ingredient", "nutrition")
             if a:
                 return a
-            hits = self.product_matches(raw_en)
+            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
             if hits:
                 return f"{FRIENDLY_OK[0]} Related products:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one and I’ll check details."
             return f"{FRIENDLY_SORRY[0]} I couldn’t find allergen or nutrition details in the CSVs."
 
-        # Healthy suggestions (legacy heuristic; normally caught earlier)
+        # Healthy suggestions (legacy heuristic)
         if re.search(r"(healthy|diet|light|low cal|low-calorie|low calorie)", q):
             hits = self.healthy_suggestions()
             if hits:
@@ -958,11 +913,10 @@ class CustomerQA:
 
         # Generic product search
         if re.search(r"(do you have|have you got|looking for|i want|i need|find|search|any)\b", q) or len(q.split()) <= 6:
-            hits = self.product_matches(raw_en)
+            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
             if hits:
-                return f"{FRIENDLY_OK[0]} I found these:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one you mean and I can check availability."
-
-        return f"{FRIENDLY_SORRY[0]} I couldn’t find that in the FAQ or products. If you share a product name or order number, I’ll check again."
+                return f"{FRIENDLY_OK[0]} I found these:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one you mean and I can check the price."
+        return f"{FRIENDLY_SORRY[0]} I couldn’t find that in the FAQ or products. If you share a product name, I’ll check again."
 
 # -----------------------------
 # Staff analytics (optional)
@@ -1001,8 +955,6 @@ class StaffAnalytics:
 # -----------------------------
 # Frontend (customer themed)
 # -----------------------------
-app = Flask(__name__)
-
 INDEX_HTML_TPL = Template("""
 <!doctype html>
 <html>
@@ -1039,7 +991,7 @@ INDEX_HTML_TPL = Template("""
         <div class="bubble bot">
           <div class="badge">${CUSTOMER}</div>
 Hello! I'm ${CUSTOMER}. I can help with:
-• Product information and availability
+• Product information (names, sizes) and prices
 • Orders and shipping (FAQ-based)
 • Nutritional info and allergens (FAQ or catalogue-based)
 • Staff analytics are available if you start with “Staff query:”
@@ -1095,10 +1047,10 @@ async function sendMsg(){
 # -----------------------------
 # Instantiate (data + handlers)
 # -----------------------------
+app   = Flask(__name__)
 dm    = DataManager(DATA_DIR)
 cust  = CustomerQA(dm)
 staff = StaffAnalytics(dm)
-app   = Flask(__name__)
 
 # -----------------------------
 # Routes
@@ -1115,10 +1067,14 @@ def chat():
         return jsonify({"reply":"Please enter a message.","speaker":ASSISTANT_NAME_CUSTOMER})
 
     user_lang = detect_lang_safe(raw)
-    if _is_romanized_ms_greeting(raw):  # force Malay for "assalamualaikum/salam" variants
-        user_lang = "ms"
 
-    # ---- Staff analytics (optional) ----
+    # Pure greeting shortcut
+    if _is_pure_greeting(raw, user_lang) or (_is_romanized_ms_greeting(raw) and _is_pure_greeting(raw, "ms")):
+        base = cust.smalltalk("hello")
+        styled = style_localize_reply(base, user_lang, intent="GREET", sentiment="positive", original_user_text=raw)
+        return jsonify({"reply": styled, "speaker": ASSISTANT_NAME_CUSTOMER})
+
+    # Staff analytics
     if raw.lower().startswith("staff query:"):
         q = raw.split(":",1)[1].strip() if ":" in raw else ""
         q_en = to_english_keywords(q, user_lang) if needs_translation(user_lang) else q
@@ -1126,27 +1082,17 @@ def chat():
         styled = style_localize_reply(reply_en, user_lang, intent="OTHER", sentiment="neutral", original_user_text=raw)
         return jsonify({"reply": styled, "speaker": ASSISTANT_NAME_STAFF})
 
-    # ---- Customer mode ----
-    # 1) Multilingual greetings shortcut
-    if _is_greeting(raw, user_lang) or _is_romanized_ms_greeting(raw):
-        base = cust.smalltalk("hello")  # factual template
-        styled = style_localize_reply(base, user_lang, intent="GREET", sentiment="positive", original_user_text=raw)
-        return jsonify({"reply": styled, "speaker": ASSISTANT_NAME_CUSTOMER})
-
-    # 2) Translate to English keywords (LLM with rule fallback)
+    # Customer mode
     query_en = to_english_keywords(raw, user_lang) if needs_translation(user_lang) else raw
-
-    # 3) Intent + sentiment
     intent, sentiment = classify_intent(query_en)
 
-    # 4) Produce a FACTUAL English answer using local data only
-    reply_en = ""
     if intent in ("GREET","SMALLTALK"):
         reply_en = cust.smalltalk("hello")
     elif intent == "PRICE":
         reply_en = cust.lookup_price(query_en) or cust.answer_en(query_en)
     elif intent == "STOCK":
-        reply_en = cust.lookup_stock(query_en) or cust.answer_en(query_en)
+        # Do NOT mention stock levels. Let answer_en list matches only.
+        reply_en = cust.answer_en(query_en)
     elif intent == "ORDER_STATUS":
         reply_en = cust.answer_en(query_en)
         if "order number" not in reply_en.lower():
@@ -1162,7 +1108,6 @@ def chat():
     else:
         reply_en = cust.answer_en(query_en)
 
-    # 5) Style + localize with LLM (fallback to plain translation)
     styled = style_localize_reply(
         facts_en=reply_en,
         user_lang=user_lang,
@@ -1202,7 +1147,7 @@ def health():
 # -----------------------------
 if __name__ == "__main__":
     use_waitress = os.getenv("USE_WAITRESS","0") == "1"
-    print(f"🚀 Nibbles running at http://127.0.0.1:5001/  (DATA_DIR={DATA_DIR})")
+    print(f"🚀 Nibbles running at http://127.0.0.1:5001/  (DATA_DIR={DATA_DIR})  [Nibbles.py v0.2.7]")
     if use_waitress:
         from waitress import serve
         serve(app, host="127.0.0.1", port=5001)
