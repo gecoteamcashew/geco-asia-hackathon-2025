@@ -124,14 +124,6 @@ RANGE_PAT  = re.compile(r"\bfrom\s+(20\d{2})\s+(?:to|-|–)\s+(20\d{2})\b", re.I
 
 GREETINGS = {"hi","hello","hey","hiya","yo","good morning","good afternoon","good evening","morning","afternoon","evening"}
 
-CATALOG_HINT_WORDS = {
-    "have","availability","available","stock","price","cost","sku","item","product",
-    "ingredients","ingredient","allergen","allergy","nutritional","nutrition",
-    "grams","g","kg","pack","size","flavor","flavour",
-    "cashew","almond","peanut","walnut","pistachio","macadamia",
-    "broad","beans","mix","trail","snack","roasted","honey","satay"
-}
-
 _STOP = set("for with in and or the a an of from to by vs on at".split())
 def _tokens(s: str) -> List[str]:
     return [w for w in re.findall(r"[A-Za-z0-9]+", (s or "").lower()) if w not in _STOP]
@@ -153,10 +145,30 @@ def is_analytics_query(q: str) -> bool:
     return False
 
 def is_complex_query(q: str) -> bool:
-    ql = q.lower()
-    if len(q) > 140: return True
-    if ql.count(" by ") >= 2 or ql.count(" vs ") >= 1: return True
-    return any(k in ql for k in ("dashboard","cohort","retention","attribution","forecast","segmentation","seasonality","correlation"))
+    ql = (q or "").lower().strip()
+
+    # Explicit complex intents (guarantee dashboard link for trends etc.)
+    if any(k in ql for k in (
+        "trend", "cohort", "retention", "attribution",
+        "forecast", "segmentation", "seasonality",
+        "correlation", "dashboard"
+    )):
+        return True
+
+    # Year ranges like "from 2022 to 2025"
+    if RANGE_PAT.search(ql):
+        return True
+
+    # Quarter / half references (Q1–Q4, H1/H2) — patterns declared below
+    if any(p.search(ql) for p in Q_PATTERNS.values()) or any(p.search(ql) for p in H_PATTERNS.values()):
+        return True
+
+    # Multi-dimension queries (group-bys, comparisons)
+    if " vs " in ql or ql.count(" by ") >= 1:
+        return True
+
+    # Long/narrative prompts
+    return len(ql) > 100
 
 def make_dashboard_link(query: str, years: Optional[List[int]]=None, period: Optional[str]=None, product: Optional[str]=None) -> str:
     params = {"id": uuid.uuid4().hex[:8], "q": query}
@@ -164,6 +176,7 @@ def make_dashboard_link(query: str, years: Optional[List[int]]=None, period: Opt
     if period: params["period"] = period
     if product:params["product"]= product
     from urllib.parse import urlencode, quote_plus
+    # Fake link for PoC (served locally to a simple page)
     return f"http://127.0.0.1:5000/dashboard?{urlencode(params, quote_via=quote_plus)}"
 
 def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
@@ -352,7 +365,7 @@ def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
     return big
 
 # -----------------------------
-# Period & ranking parsing
+# Period parsing (used by is_complex_query too)
 # -----------------------------
 Q_PATTERNS = {
     "q1": re.compile(r"\b(q1|first\s+quarter|quarter\s*1)\b", re.I),
@@ -588,26 +601,31 @@ class Assistant:
                         text += f"\n\nOpen dashboard: {make_dashboard_link(q, years=years, period=period, product=product)}"
                     return text, ASSISTANT_NAME_STAFF
 
-            return call_model([
+            # Fallback to LLM for other analytics questions
+            text = call_model([
                 {"role":"system","content":(
                     f"You are Clarity, an internal analytics officer at {COMPANY}. "
                     "Use concise, plain text answers. If data specifics are missing, say which file/field you need."
                 )},
                 {"role":"user","content": q},
-            ]), ASSISTANT_NAME_STAFF
+            ])
+            if is_complex_query(q):
+                text += f"\n\nOpen dashboard: {make_dashboard_link(q)}"
+            return text, ASSISTANT_NAME_STAFF
 
         # Nibbles mode: FAQ fallback; catalogue suppressed to avoid noise
         faq = self.cust.faq_lookup(q)
         if faq:
             return faq, ASSISTANT_NAME_CUSTOMER
 
-        return call_model([
+        text = call_model([
             {"role":"system","content":(
                 f"You are Nibbles, a warm and professional Customer Service Officer at {COMPANY}. "
                 "Keep replies short and friendly. Never mention that you are an AI."
             )},
             {"role":"user","content": q},
-        ]), ASSISTANT_NAME_CUSTOMER
+        ])
+        return text, ASSISTANT_NAME_CUSTOMER
 
 # -----------------------------
 # Flask app + Cerulean UI (simple header)
