@@ -293,6 +293,15 @@ def render_items(items: List[Dict]) -> str:
 def strip_tags(s: str) -> str:
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
+# Convert lightweight Markdown (**bold**, __bold__, `code`) to inline HTML
+def md_inline_to_html(s: str) -> str:
+    if not s:
+        return s
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s, flags=re.DOTALL)  # **bold**
+    s = re.sub(r"__(.+?)__",     r"<b>\1</b>", s, flags=re.DOTALL)  # __bold__
+    s = re.sub(r"`{1,3}([^`]+)`{1,3}", r"\1", s, flags=re.DOTALL)   # strip `code`
+    return s
+
 # ---------- session memory (per browser) ----------
 _sessions: Dict[str, Dict] = defaultdict(lambda: {
     "families": set(), "styles": set(), "sizes": [],
@@ -422,6 +431,7 @@ def handle_product_query(q0: str, cat: Catalog, sid: str) -> Dict[str,str]:
 
     llm = llm_reply(q0, items[:5], _sessions.get(sid), get_history(sid))
     if llm:
+        llm = md_inline_to_html(llm)
         reply_html = llm + "<br><br>" + ctas + extra
         push_history(sid, "assistant", reply_html)
         return {"reply": reply_html}
@@ -436,7 +446,7 @@ def handle_smalltalk(q0: str, cat: Catalog, sid: str) -> Dict[str,str]:
     llm = llm_reply(q0, None, _sessions.get(sid), get_history(sid))
     if llm:
         recs = suggest_from_prefs(cat, sid, limit=2)
-        reply_html = llm
+        reply_html = md_inline_to_html(llm)
         if recs:
             reply_html += "<br><br><small>Snack idea:</small><br>" + render_items(recs)
         push_history(sid, "assistant", reply_html)
