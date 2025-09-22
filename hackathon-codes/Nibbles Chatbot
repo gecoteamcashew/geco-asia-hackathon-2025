@@ -992,7 +992,7 @@ INDEX_HTML_TPL = Template("""
 Hello! I'm ${CUSTOMER}. I can help with:
 • Product information (names, sizes) and prices
 • Orders and shipping (FAQ-based)
-• Nutritional info and allergens (FAQ or catalogue-based)”
+• Nutritional info and allergens (FAQ or catalogue-based)
         </div>
       </div>
       <div class="composer">
