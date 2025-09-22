@@ -1,1153 +1,657 @@
-# Nibbles.py — Version 0.2.7 (no stock levels in customer replies)
-# Customer-facing chatbot (Nibbles) with Clarity-style data lookup
-# - Friendly, data-grounded answers from CSV/Excel/Docx
-# - Translation-first (LLM) with offline fallback; no hallucinated facts
-# - bitdeer.env loader for MODEL, API_URL, API_KEY
-# - Product index built from sku_master description-like columns (tolerant)
-# - LLM intent detection + empathetic, localized style (facts remain from CSVs)
-# - Size-aware exact-match price lookup (e.g., “150g”)
-# - FIXES 0.2: UI-safe sanitizer prevents truncated foreign-language replies
-# - FIXES 0.2.1 (JP): カタカナ mappings, non-product token stripping, size token kept
-# - FIXES 0.2.2 (SKU ingest): tolerant description-column detection; no SKU code required
-# - FIXES 0.2.3: Indentation fix in DataManager.__init__
-# - FIXES 0.2.5: Pure-greeting detection, hard intent overrides, list-preserving localized replies
-# - FIXES 0.2.6: Stock privacy buckets (later superseded)
-# - FIXES 0.2.7: **Do not mention stock levels at all** in customer path (no counts, no buckets)
+# Nibbles.py — Version 0.3.9
+# - Fix: robust LLM endpoint builder (no more .../chat/completions/chat/completions)
+# - Reads SYSTEM_PROMPT from env (falls back to default)
+# - /healthz now shows resolved chat_url
+# - /reset still clears per-session chat history only
+#
+# Run:  python Nibbles.py  → http://127.0.0.1:5001
+#
+# bitdeer.env / .env:
+#   DATA_DIR=C:/Team_Cashew_Synthetic_Data
+#   COMPANY_NAME=Cashew4Nuts
+#   CURRENCY=SGD
+#   NIBBLES_PORT=5001
+#   LLM_API_URL=https://api-inference.bitdeer.ai/v1       # any of: host, /v1, or full /v1/chat/completions
+#   LLM_API_KEY=sk-...
+#   LLM_MODEL=gpt-4o-mini
+#   SYSTEM_PROMPT=You are Nibbles...
+#   LLM_TIMEOUT_SEC=25
 
-import os, re, sys, subprocess, logging, json
+from __future__ import annotations
+import os, re, sys, json
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
-from string import Template
+from collections import defaultdict
 
-# -----------------------------
-# Logging
-# -----------------------------
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger("nibbles_app")
-VERBOSE_LLM = os.getenv("VERBOSE_LLM", "0") == "1"
-
-# -----------------------------
-# Auto-install dependencies
-# -----------------------------
-REQUIRED = [
-    "flask","pandas","python-dateutil","waitress",
-    "fuzzywuzzy","python-levenshtein","python-docx","openpyxl","unidecode","requests","python-dotenv"
-]
-
-def ensure_deps():
-    import importlib
-    missing=[]
-    for pkg in REQUIRED:
-        mod = "Levenshtein" if pkg=="python-levenshtein" else \
-              "dateutil" if pkg=="python-dateutil" else \
-              "docx" if pkg=="python-docx" else \
-              pkg
-        try: importlib.import_module(mod)
-        except ImportError: missing.append(pkg)
-    if missing:
-        print(f"Installing missing packages: {missing}")
-        subprocess.check_call([sys.executable,"-m","pip","install",*missing])
-ensure_deps()
-
-# -----------------------------
-# Imports (post-install)
-# -----------------------------
-import pandas as pd
-from flask import Flask, request, jsonify, render_template_string
-from fuzzywuzzy import fuzz
-from docx import Document
-from unidecode import unidecode
-import requests
-from dotenv import load_dotenv
-
-# -----------------------------
-# Env loading (prioritize bitdeer.env)
-# -----------------------------
-def _load_env_priority():
-    """
-    Priority order:
-    1) ENV_FILE env var (absolute or relative path)
-    2) bitdeer.env in script dir
-    3) bitdeer.env in CWD
-    4) bitdeer.env in parent of script dir
-    5) /mnt/data/bitdeer.env
-    6) Fallback: default .env (if present) and system env
-    """
-    candidates: List[Path] = []
-    env_file = os.getenv("ENV_FILE", "").strip()
-    if env_file:
-        candidates.append(Path(env_file).expanduser().resolve())
-
-    here = Path(__file__).resolve().parent
-    candidates += [
-        here / "bitdeer.env",
-        Path.cwd() / "bitdeer.env",
-        here.parent / "bitdeer.env",
-        Path("/mnt/data/bitdeer.env"),
-    ]
-
-    for p in candidates:
-        try:
-            if p and p.exists():
-                load_dotenv(p, override=True)
-                log.info(f"[env] Loaded {p}")
-                return
-        except Exception as e:
-            log.warning(f"[env] Failed loading {p}: {e}")
-
-    load_dotenv(override=False)
-    log.info("[env] Loaded default .env or system environment (no bitdeer.env found)")
-
-_load_env_priority()
-
-# Canonical + Bitdeer-prefixed keys
-API_URL = (os.getenv("API_URL") or os.getenv("BITDEER_API_URL") or "https://api-inference.bitdeer.ai/v1/chat/completions").strip()
-API_KEY = (os.getenv("API_KEY") or os.getenv("BITDEER_API_KEY") or os.getenv("BEARER_TOKEN") or "").strip()
-MODEL   = (os.getenv("MODEL")   or os.getenv("BITDEER_MODEL")   or "openai/gpt-oss-120b").strip()
-
-# -----------------------------
-# Config
-# -----------------------------
-ASSISTANT_NAME_CUSTOMER = "Nibbles"
-ASSISTANT_NAME_STAFF    = "Clarity"  # retained for staff-only queries
-
-_default_dir = Path("/mnt/data") if Path("/mnt/data").exists() else Path(r"C:\Team_Cashew_Synthetic_Data")
-DATA_DIR = Path(os.getenv("DATA_DIR", str(_default_dir)))
-
-# -----------------------------
-# UI-safe sanitizer for LLM text (prevents truncated foreign-language output)
-# -----------------------------
-CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F]')
-ZWS_BIDI_RE = re.compile(r'[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]')
-
-def _sanitize_for_ui(s: str) -> str:
-    if not s:
-        return s
-    s = s.replace("\u2028", "\n").replace("\u2029", "\n")  # normalize line/para sep
-    s = CONTROL_CHARS_RE.sub(" ", s)
-    s = ZWS_BIDI_RE.sub("", s)
-    return re.sub(r"[ \t]+", " ", s).strip()
-
-# -----------------------------
-# LLM (translation only + style) with robust fallback
-# -----------------------------
-def _call_llm(system_prompt: str, user_text: str, max_tokens=400) -> str:
-    if not (API_URL and API_KEY and MODEL):
-        if VERBOSE_LLM: log.info("[llm] missing API creds or model; skipping call")
-        return ""
+# ---------- bootstrap installs ----------
+def _pip_install(pkgs: List[str]):
+    import subprocess
     try:
-        r = requests.post(
-            API_URL,
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": MODEL,
-                "messages": [
-                    {"role":"system","content":system_prompt},
-                    {"role":"user","content":user_text}
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0.0,
-                "top_p": 1,
-                "frequency_penalty": 0,
-                "presence_penalty": 0,
-                "stream": False
-            },
-            timeout=30
-        )
-        if r.status_code != 200:
-            if VERBOSE_LLM:
-                log.warning(f"[llm] HTTP {r.status_code}: {r.text[:400]}")
-            return ""
-        try:
-            data = r.json()
-        except Exception:
-            if VERBOSE_LLM:
-                log.warning(f"[llm] JSON parse failed. Raw: {r.text[:400]}")
-            return ""
-        msg = ((data.get("choices") or [{}])[0].get("message") or {}).get("content","")
-        msg = re.sub(r"[*_`>#]", " ", msg or "").strip()
-        msg = _sanitize_for_ui(msg)
-        if VERBOSE_LLM and msg:
-            log.info(f"[llm] ok {len(msg)} chars (model={MODEL})")
-        return msg
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *pkgs])
     except Exception as e:
-        if VERBOSE_LLM:
-            log.warning(f"[llm] exception: {e}")
-        return ""
+        print(f"[warn] Could not auto-install {pkgs}: {e}", file=sys.stderr)
 
-# -----------------------------
-# Language helpers (SEA/CJK aware)
-# -----------------------------
-JP_HIRA = re.compile(r'[\u3040-\u309F]')
-JP_KATA = re.compile(r'[\u30A0-\u30FF]')
-CN_HAN  = re.compile(r'[\u4E00-\u9FFF]')
-KO_HANG = re.compile(r'[\uAC00-\uD7AF]')
-TH_TH   = re.compile(r'[\u0E00-\u0E7F]')
-LAO_LA  = re.compile(r'[\u0E80-\u0EFF]')
-KM_KH   = re.compile(r'[\u1780-\u17FF]')
-MY_MM   = re.compile(r'[\u1000-\u109F]')
-VI_DIAC = re.compile(r'[ăâđêôơưĂÂĐÊÔƠƯ]')
+try:
+    import pandas as pd
+except Exception:
+    _pip_install(["pandas>=2.1.0"]); import pandas as pd
 
-TL_TOKENS = {"kumusta","kamusta","magkano","salamat","po","paano","meron","wala","balik","utos","paki"}
-MS_ID_TOKENS = {"apa","boleh","pesan","penghantaran","pengiriman","informasi","barang",
-                "kacang","terima kasih","selamat","harga","ada","beli","salam",
-                "assalamualaikum","assalamu'alaikum","assalamu’alaikum","assalamu alaikum",
-                "asalamualaikum","assalmualaikum"}
+try:
+    from flask import Flask, request, jsonify, render_template_string
+except Exception:
+    _pip_install(["flask>=3.0.0"]); from flask import Flask, request, jsonify, render_template_string
 
-GREET_TOKENS = {
-    "zh": ["你好","您好","嗨","哈喽","早上好","下午好","晚上好"],
-    "ja": ["こんにちは","こんばんは","おはよう","やあ","もしもし","ハロー"],
-    "ko": ["안녕하세요","안녕","ハイ","안녕하십니까"],
-    "th": ["สวัสดี","หวัดดี"],
-    "vi": ["xin chào","chào bạn","chào"],
-    "ms": ["hai","halo","selamat pagi","selamat petang","selamat malam","salam",
-           "assalamualaikum","assalamu'alaikum","assalamu’alaikum","assalamu alaikum"],
-    "tl": ["kumusta","kamusta","hello","hi"],
-    "en": ["hi","hello","hey","good morning","good afternoon","good evening"]
-}
+try:
+    from dotenv import load_dotenv
+except Exception:
+    _pip_install(["python-dotenv>=1.0.0"]); from dotenv import load_dotenv
 
-ASSALAM_ROMANIZED_RE = re.compile(
-    r"(ass?alam(?:u'?|u’)?(?:\s*|)ala?i?k(?:u|o)m|salam(?:\s*ualaikum)?)",
-    re.I
-)
+try:
+    from rapidfuzz import process, fuzz
+except Exception:
+    _pip_install(["rapidfuzz>=3.5.2"]); from rapidfuzz import process, fuzz
 
-def _is_romanized_ms_greeting(text: str) -> bool:
-    return bool(ASSALAM_ROMANIZED_RE.search(text))
+try:
+    from unidecode import unidecode
+except Exception:
+    _pip_install(["Unidecode>=1.3.6"]); from unidecode import unidecode
 
-def detect_lang_safe(text: str) -> str:
-    t = text.strip()
-    if not t: return "en"
-    if JP_HIRA.search(t) or JP_KATA.search(t): return "ja"
-    if KO_HANG.search(t): return "ko"
-    if CN_HAN.search(t): return "zh"
-    if TH_TH.search(t): return "th"
-    if LAO_LA.search(t): return "lo"
-    if KM_KH.search(t): return "km"
-    if MY_MM.search(t): return "my"
-    if VI_DIAC.search(t): return "vi"
-    tl = t.lower()
-    if any(tok in tl for tok in TL_TOKENS): return "tl"
-    if any(tok in tl for tok in MS_ID_TOKENS): return "ms"
-    return "en"
+try:
+    import requests
+except Exception:
+    _pip_install(["requests>=2.31.0"]); import requests
 
-def needs_translation(lang: str) -> bool:
-    return lang != "en"
+# ---------- env loading ----------
+def load_env():
+    custom = os.environ.get("ENV_FILE")
+    if custom and os.path.exists(custom):
+        load_dotenv(custom, override=True); return
+    here = Path(__file__).resolve().parent
+    for fn in ("bitdeer.env", ".env"):
+        p = here / fn
+        if p.exists(): load_dotenv(p, override=True); return
+load_env()
 
-def _normalize_sizes(text: str) -> str:
-    s = text
-    s = re.sub(r'(\d+)\s*克', r'\1g', s)
-    def kg_to_g(m):
-        try: return f"{int(float(m.group(1))*1000)}g"
-        except: return m.group(0)
-    s = re.sub(r'(\d+(?:\.\d+)?)\s*(公斤|kg)', kg_to_g, s)
-    s = re.sub(r'(\d+)\s*g\b', r'\1g', s, flags=re.I)
-    return s
+CURRENCY     = os.environ.get("CURRENCY", "SGD").strip()
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Cashew4Nuts").strip()
+DATA_DIR     = os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent))
+PORT         = int(os.environ.get("NIBBLES_PORT", "5001"))
 
-_RULE_MAP = {
-    "zh": {
-        "多少钱":"price","价格":"price","价钱":"price","买":"buy","购买":"buy",
-        "有吗":"do you have","有沒有":"do you have","运费":"shipping","配送":"delivery","送货":"delivery","退款":"refund","退货":"return",
-        "花生":"peanuts","腰果":"cashews","开心果":"pistachios","核桃":"walnuts","杏仁":"almonds","榛子":"hazelnuts","夏威夷果":"macadamia",
-        "蜂蜜":"honey","烤":"roasted","盐味":"salted","無鹽":"unsalted","无盐":"unsalted","烘焙":"baked","自然":"natural",
-        "你好":"hello","您好":"hello","嗨":"hello","哈喽":"hello",
-        "低盐":"low salt","少盐":"low salt","减盐":"low salt","低鈉":"low sodium","低脂":"low fat","低脂肪":"low fat","少油":"low fat","無糖":"no sugar","无糖":"no sugar"
-    },
-    "ja": {
-        "いくら":"price","値段":"price","買":"buy","購入":"buy","ありますか":"do you have",
-        "配送":"delivery","送料":"shipping","返品":"return","返金":"refund",
-        "ピスタチオ":"pistachios","アーモンド":"almonds","カシューナッツ":"cashews","くるみ":"walnuts","落花生":"peanuts",
-        "ヘーゼルナッツ":"hazelnuts","マカダミア":"macadamia",
-        "蜂蜜":"honey","ロースト":"roasted","無塩":"unsalted","塩味":"salted","焼き":"baked","ナチュラル":"natural",
-        "こんにちは":"hello","こんばんは":"hello","おはよう":"hello","やあ":"hello","もしもし":"hello",
-        "ピーナッツ":"peanuts","ピーナツ":"peanuts","ローストピーナッツ":"roasted peanuts","ロースト ピーナッツ":"roasted peanuts",
-        "減塩":"low salt","低塩":"low salt","塩分控えめ":"low salt","低脂肪":"low fat","低脂":"low fat","砂糖不使用":"no sugar"
-    },
-    "ko": {
-        "가격":"price","얼마":"price","구매":"buy","사고 싶":"buy","있나요":"do you have","재고":"stock",
-        "배송":"delivery","환불":"refund","반품":"return","배송비":"shipping",
-        "피스타치오":"pistachios","아몬드":"almonds","캐슈넛":"cashews","호두":"walnuts","땅콩":"peanuts","헤이즐넛":"hazelnuts","마카다미아":"macadamia",
-        "허니":"honey","구운":"roasted","무염":"unsalted","소금":"salted","베이크드":"baked","내추럴":"natural",
-        "안녕하세요":"hello","안녕":"hello","저염":"low salt","저나트륨":"low sodium","무염":"unsalted","저지방":"low fat","무가당":"no sugar"
-    },
-    "th": {
-        "ราคา":"price","เท่าไหร่":"price","ซื้อ":"buy","มีไหม":"do you have","สต็อก":"stock",
-        "จัดส่ง":"delivery","ค่าส่ง":"shipping","คืนเงิน":"refund","คืนสินค้า":"return",
-        "พิสตาชิโอ":"pistachios","อัลมอนด์":"almonds","เม็ดมะม่วง":"cashews","วอลนัท":"walnuts","ถั่วลิสง":"peanuts","เฮเซลนัท":"hazelnuts","แมคคาเดเมีย":"macadamia",
-        "น้ำผึ้ง":"honey","อบ":"roasted","ไม่เค็ม":"unsalted","เค็ม":"salted","ธรรมชาติ":"natural",
-        "สวัสดี":"hello","หวัดดี":"hello","โซเดียมต่ำ":"low sodium","ลดเกลือ":"low salt","ไขมันต่ำ":"low fat","ไม่ใส่น้ำตาล":"no sugar"
-    },
-    "vi": {
-        "giá":"price","bao nhiêu":"price","mua":"buy","có không":"do you have","còn hàng":"stock",
-        "giao hàng":"delivery","vận chuyển":"shipping","hoàn tiền":"refund","trả hàng":"return",
-        "hạt dẻ cười":"pistachios","hạnh nhân":"almonds","hạt điều":"cashews","óc chó":"walnuts","đậu phộng":"peanuts","lạc":"peanuts","hazelnut":"hazelnuts","mắc ca":"macadamia",
-        "mật ong":"honey","rang":"roasted","không muối":"unsalted","mặn":"salted","nướng":"baked","tự nhiên":"natural",
-        "xin chào":"hello","chào":"hello","ít muối":"low salt","giảm muối":"low salt","ít béo":"low fat","không đường":"no sugar","thấp natri":"low sodium"
-    },
-    "ms": {
-        "harga":"price","berapa":"price","beli":"buy","ada":"do you have","stok":"stock",
-        "penghantaran":"delivery","pengiriman":"delivery","pos":"shipping","pulangan":"return","bayaran balik":"refund",
-        "pistachio":"pistachios","badam":"almonds","kacang mete":"cashews","kacang walnut":"walnuts","kacang tanah":"peanuts","hazelnut":"hazelnuts","macadamia":"macadamia",
-        "madu":"honey","panggang":"roasted","tanpa garam":"unsalted","masin":"salted","bakar":"baked","semula jadi":"natural",
-        "hai":"hello","halo":"hello","selamat pagi":"hello","selamat petang":"hello","selamat malam":"hello","salam":"hello",
-        "rendah garam":"low salt","kurang garam":"low salt","rendah natrium":"low sodium","rendah lemak":"low fat","tanpa gula":"no sugar"
-    },
-    "tl": {
-        "magkano":"price","bili":"buy","meron ba":"do you have","may stock":"stock","paano":"how",
-        "paghahatid":"delivery","shipping":"shipping","refund":"refund","return":"return",
-        "pistachio":"pistachios","almond":"almonds","kasuy":"cashews","nogales":"walnuts","mani":"peanuts","hazelnut":"hazelnuts","macadamia":"macadamia",
-        "pulot":"honey","inihaw":"roasted","walang asin":"unsalted","maalat":"salted","baked":"baked","natural":"natural",
-        "kumusta":"hello","kamusta":"hello","hello":"hello","hi":"hello","mababang asin":"low salt","walang asin":"unsalted","mababang taba":"low fat","walang asukal":"no sugar"
-    },
-}
+LLM_API_URL  = (os.environ.get("LLM_API_URL") or os.environ.get("OPENAI_API_BASE") or "").strip()
+LLM_API_KEY  = (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+LLM_MODEL    = (os.environ.get("LLM_MODEL")   or os.environ.get("OPENAI_MODEL")   or "").strip()
+LLM_TIMEOUT  = int(os.environ.get("LLM_TIMEOUT_SEC", "25"))
 
-def to_english_keywords(text: str, user_lang: str) -> str:
-    if not needs_translation(user_lang) or not text.strip():
-        return text
-    sys_prompt = "Translate the user's message into concise English keywords for product/customer-service search. Do not add facts. Plain text only."
-    out = _call_llm(sys_prompt, _normalize_sizes(text), max_tokens=80)
-    if out:
-        return out
-    # Fallback to rules
-    low = _normalize_sizes(text)
-    rule = ""
-    if user_lang in _RULE_MAP:
-        tokens = []
-        s_low = low.lower()
-        for k, v in _RULE_MAP[user_lang].items():
-            if k in s_low:
-                tokens.append(v)
-        sizes = re.findall(r'\b\d+(?:g|kg|ml)\b', s_low)
-        if sizes: tokens.extend(sizes)
-        ascii_words = re.findall(r'[a-zA-Z0-9]{2,}', low)
-        if ascii_words: tokens.extend(ascii_words)
-        rule = " ".join(sorted(set(tokens), key=tokens.index)).strip()
-    return rule or text
-
-_APOLOGY = {
-    "zh": "抱歉，我暂时无法翻译。以下为英文原文：",
-    "ja": "すみません、現在翻訳できません。英語の原文を表示します：",
-    "ko": "죄송합니다. 현재 번역이 불가합니다. 영어 원문을 보여드립니다:",
-    "th": "ขออภัย ขณะนี้แปลไม่ได้ ข้อความภาษาอังกฤษดังต่อไปนี้:",
-    "vi": "Xin lỗi, hiện không thể dịch. Dưới đây là nội dung tiếng Anh:",
-    "ms": "Maaf, terjemahan tidak tersedia buat masa ini. Teks asal bahasa Inggeris:",
-    "tl": "Pasensya na, hindi ako makapag-translate ngayon. Narito ang English:",
-}
-
-def from_english_plain(text: str, user_lang: str) -> str:
-    if not needs_translation(user_lang) or not text.strip():
-        return text
-    sys_prompt = (
-        f"Translate into {user_lang} in plain text. Preserve product names and numbers exactly. "
-        "Do not add new information or change facts. No markdown."
-    )
-    out = _call_llm(sys_prompt, text, max_tokens=480)
-    if out:
-        return _sanitize_for_ui(out)
-    prefix = _APOLOGY.get(user_lang, "Sorry, translation unavailable. English reply:")
-    return _sanitize_for_ui(f"{prefix}\n{text}")
-
-# -----------------------------
-# Greeting detection (pure greetings only)
-# -----------------------------
-_PURE_EN_GREETING_RE = re.compile(
-    r"^(hi|hello|hey|thanks|thank you|bye|goodbye|good (morning|afternoon|evening))!?\.?$",
-    re.I
-)
-
-def _is_pure_greeting(raw: str, lang: str) -> bool:
+def build_chat_url(base: str) -> str:
     """
-    Treat messages as greetings only if the WHOLE message is a greeting/smalltalk.
-    If it has question marks, digits, or request keywords, it's NOT a greeting.
-    Prevents 'hi' inside 'pistachios' from triggering greeting.
+    Accepts:
+      - https://host
+      - https://host/v1
+      - https://host/openai/v1
+      - https://host/v1/chat/completions (already complete)
+      - https://host/chat/completions (already complete)
+      - https://host/v1/responses (alternative)
+    Returns a valid /chat/completions endpoint. Defaults to OpenAI if base missing.
     """
-    if not raw.strip():
-        return False
-    low = raw.strip().lower()
+    if not base:
+        return "https://api.openai.com/v1/chat/completions"
+    b = base.rstrip("/")
+    # Already a full endpoint?
+    if re.search(r"/(chat/)?completions$", b) or b.endswith("/responses"):
+        return b
+    # If base already includes a version segment (/v1, /v2, /openai/v1, etc.), append chat/completions
+    if re.search(r"/v\d+($|/)", b):
+        return b + "/chat/completions"
+    # Otherwise assume host-only
+    return b + "/v1/chat/completions"
 
-    # disqualify real questions/asks
-    if "?" in low or re.search(r"\d", low):
-        return False
-    if re.search(r"(price|how much|cost|in stock|stock|available|availability|do you have|have you got|order|shipping|delivery)", low):
-        return False
+CHAT_URL     = build_chat_url(LLM_API_URL)
+LLM_ENABLED  = bool(CHAT_URL and LLM_API_KEY and LLM_MODEL)
 
-    # EN: whole-message match
-    if _PURE_EN_GREETING_RE.match(low):
-        return True
-
-    # Non-EN: allow exact token matches (short messages only)
-    toks = set(GREET_TOKENS.get(lang, []) + GREET_TOKENS["en"])
-    stripped = re.sub(r"[!。！？\.\s]+$", "", low)
-    if len(stripped) <= 24 and stripped in toks:
-        return True
-
-    return False
-
-# -----------------------------
-# Intent detection
-# -----------------------------
-INTENT_LABELS = [
-    "GREET", "SMALLTALK", "PRICE", "STOCK",
-    "ORDER_STATUS", "SHIPPING_INFO", "REFUND_RETURN",
-    "PRODUCT_SEARCH", "OTHER"
-]
-_ANGRY_WORDS = re.compile(r"\b(angry|furious|outrageous|unacceptable|complain|terrible|awful|worst|refund now|immediately)\b", re.I)
-_CONFUSED_WORDS = re.compile(r"\b(where.*order|can.?t find|confus|lost|don.?t know)\b", re.I)
-
-def _parse_json_loose(s: str) -> Dict[str, Any]:
-    try:
-        return json.loads(s)
-    except Exception:
-        m = re.search(r"\{.*\}", s, re.S)
-        if m:
-            try: return json.loads(m.group(0))
-            except Exception: pass
-    return {}
-
-def classify_intent(en_text: str) -> Tuple[str, str]:
-    """
-    Returns (intent, sentiment). Sentiment in {angry, frustrated, confused, neutral, positive}.
-    Priority rules: price/stock/order/refund/shipping ALWAYS override LLM.
-    """
-    t = (en_text or "").lower().strip()
-
-    # Priority signals (override LLM)
-    if re.search(r"\b(price|how much|cost)\b", t):
-        pri = "PRICE"
-    elif re.search(r"\b(in stock|stock|available|availability)\b", t) or re.search(r"\b(do you have|have you got)\b", t):
-        pri = "STOCK"
-    elif re.search(r"\b(track|tracking|status|where.*order|order\s*status)\b", t):
-        pri = "ORDER_STATUS"
-    elif re.search(r"\b(refund|return|replace)\b", t):
-        pri = "REFUND_RETURN"
-    elif re.search(r"\b(ship|shipping|deliver|delivery|eta|arriv)\w*\b", t):
-        pri = "SHIPPING_INFO"
-    elif len(t.split()) <= 6:
-        pri = "PRODUCT_SEARCH"
-    else:
-        pri = ""
-
-    sent = "angry" if _ANGRY_WORDS.search(t) else ("confused" if _CONFUSED_WORDS.search(t) else "neutral")
-    if pri:
-        return pri, sent
-
-    sys_prompt = (
-        "You are an intent classifier for a customer-service chat about snacks/e-commerce. "
-        f"Choose exactly one intent from: {', '.join(INTENT_LABELS)}. "
-        "Also set sentiment to one of: angry, frustrated, confused, neutral, positive. "
-        'Return ONLY JSON like {"intent":"PRICE","sentiment":"neutral"}. English only.'
-    )
-    raw = _call_llm(sys_prompt, en_text, max_tokens=60)
-    data = _parse_json_loose(raw) if raw else {}
-    intent = str(data.get("intent","")).upper().strip()
-    sentiment = str(data.get("sentiment","")).lower().strip() or sent
-    if intent not in INTENT_LABELS:
-        intent = "OTHER"
-    return intent, sentiment
-
-# -----------------------------
-# Style/localize with LLM (no new facts)
-# -----------------------------
-def style_localize_reply(
-    facts_en: str,
-    user_lang: str,
-    intent: str,
-    sentiment: str,
-    original_user_text: str = ""
-) -> str:
-    if not facts_en.strip():
-        facts_en = "I couldn’t find that in our files. Please share more details and I’ll check again."
-
-    sys_prompt = (
-        "You are a friendly, professional Customer Service Officer at Cashew4Nuts.\n"
-        "TASK: Rewrite and translate the assistant's message into the user's language, with an empathetic tone that fits the intent/sentiment.\n"
-        "RULES:\n"
-        "1) DO NOT invent prices, inventory, policies, or order info. Use ONLY the FACTS provided.\n"
-        "2) Keep product names, sizes, and numbers EXACT.\n"
-        "3) Keep it concise (1–3 short sentences). No markdown.\n"
-        "4) If intent is ORDER_STATUS or REFUND_RETURN and needed info is missing, politely ask for the order number and key details (no policy claims).\n"
-        "5) If intent is PRICE/STOCK/PRODUCT_SEARCH, be helpful, but do not add products beyond what's in FACTS.\n"
-        "6) Match sentiment: for angry/frustrated, start with a brief apology and assurance; for confused, give clear guidance.\n"
-        "7) If FACTS contains a list (lines starting with '-' or '•' or numbered items), KEEP the list structure and items exactly; do not summarize or drop items. You may add one short lead-in sentence in the user's language.\n"
-    )
-    user_msg = (
-        f"USER_LANGUAGE: {user_lang}\n"
-        f"INTENT: {intent}\n"
-        f"SENTIMENT: {sentiment}\n"
-        f"USER_RAW: {original_user_text.strip()[:400]}\n"
-        f"FACTS (English, must not change):\n{facts_en}"
-    )
-    out = _call_llm(sys_prompt, user_msg, max_tokens=320)
-    return _sanitize_for_ui(out) if out else _sanitize_for_ui(from_english_plain(facts_en, user_lang))
-
-# -----------------------------
-# Column detectors
-# -----------------------------
-REV_PAT   = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|line_?total|grand_?total|sales)", re.I)
-PROD_PAT  = re.compile(r"(sku_?description|product|product_?name|item_?name|desc|name)", re.I)
-PRICE_PAT = re.compile(r"(unit_?price|price|list_?price|selling_?price|sgd|amount|unit\s*price)", re.I)
-
-def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty: return df
-    df = df.copy()
-    df.columns = [str(c).replace("\u00A0"," ").strip() for c in df.columns]
-    for c in df.columns:
-        if df[c].dtype == object:
-            df[c] = (df[c].astype(str)
-                          .str.replace("\u00A0"," ", regex=False)
-                          .str.replace(r"\s+"," ", regex=True)
-                          .str.strip())
-    return df
-
-def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]] = None) -> Optional[str]:
-    if df is None or df.empty: return None
-    if priority:
-        for c in priority:
-            if c in df.columns: return c
-    for c in df.columns:
-        if regex.search(str(c)): return c
+# ---------- helpers ----------
+def find_file(filename_like: str, base_dir: str) -> Optional[Path]:
+    base = Path(base_dir)
+    if base.is_file():
+        return base if base.name.lower() == filename_like.lower() else None
+    for p in base.rglob("*"):
+        if p.is_file() and p.name.lower() == filename_like.lower():
+            return p
     return None
 
-# -----------------------------
-# Data Manager
-# -----------------------------
-FILE_HINTS = {
-    "faq": ["faq_list","master_faq_list","faq"],
-    "catalogue": ["camel product catalogue","catalogue","catalog"],
-    "sku_master": ["sku_master","sku master","sku"],
-    "sales_transactions": ["sales_transactions","sales transactions","transactions","sales"],
-    "ecommerce_purchases": ["ecommerce_purchases","ecommerce purchases","purchases"],
+PRICE_COLS = ["unit_price_sgd","unit_price","price_sgd","price","list_price_sgd","list_price","net_price_sgd"]
+DESC_COLS  = ["sku_description","product_name","name","title","description"]
+PACK_COLS  = ["pack_size","packsize","size","weight_g","weight","net_weight_g","net_weight"]
+SKU_COLS   = ["sku","item_code","product_code","item_no","item","sku_id"]
+
+def first_existing(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns: return c
+    lower_map = {c.lower(): c for c in df.columns}
+    for c in candidates:
+        if c in lower_map: return lower_map[c]
+    return None
+
+_SIZE_PATTERNS = [
+    r"(?P<num>\d+(?:[.,]\d+)?)\s*(?P<u>kg|kilogram|kilo|公斤|千克|กก|キロ|킬로|кг|كيلو|กิโλο)",
+    r"(?P<num>\d+(?:[.,]\d+)?)\s*(?P<u>g|gram|克|公克|グラム|그램|กรัม)",
+    r"(?P<num>\d+(?:[.,]\d+)?)(?P<u>kg|g)",
+]
+_SIZE_RE = [re.compile(p, re.IGNORECASE) for p in _SIZE_PATTERNS]
+
+def parse_grams(text: str) -> Optional[int]:
+    t = str(text)
+    for rx in _SIZE_RE:
+        m = rx.search(t)
+        if not m: continue
+        num = m.group("num").replace(",", ".")
+        unit = m.group("u").lower()
+        try:
+            val = float(num)
+        except:
+            continue
+        if unit.startswith("kg") or unit in {"kilogram","kilo","公斤","千克","กก","キロ","킬로","кг","كيلو","กิโλο"}:
+            return int(round(val * 1000))
+        return int(round(val))
+    return None
+
+def normalize_text(s: str) -> str:
+    s = unidecode(str(s)).lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+# ---------- multilingual tokens ----------
+SYNONYMS: Dict[str, List[str]] = {
+    # families
+    "peanut":   ["花生","落花生","ピーナッツ","ﾋﾟｰﾅｯﾂ","땅콩","kacang","mani","peanuts","peanut"],
+    "almond":   ["杏仁","扁桃","アーモンド","아몬드","almendra","badam","almonds","almond"],
+    "cashew":   ["腰果","カシューナッツ","캐슈넛","kacang mete","kasuy","cashews","cashew"],
+    "pistachio":["开心果","開心果","ピスタチオ","피스타치오","pista","pistachios","pistachio"],
+    "macadamia":["夏威夷果","マカダミア","마카다미아","macadamias","macadamia"],
+    "hazelnut": ["榛子","ヘーゼルナッツ","헤이즐넛","hazelnuts","hazelnut"],
+    "walnut":   ["核桃","くるみ","호두","walnuts","walnut"],
+    # styles
+    "roasted":  ["烤","焙煎","焼","素焼き","ロースト","볶음","볶은","panggang","sangrai","roasted","baked"],
+    "baked":    ["烘烤","烘焙","焙煎","ベイクド","구운","baked"],
+    "salted":   ["咸","鹹","盐味","塩味","塩","소금","asin","beras garam","salted"],
+    "unsalted": ["無塩","無鹽","不加盐","不加鹽","무염","tanpa garam","unsalted"],
+    "honey":    ["蜂蜜","はちみつ","허니","madu","honey"],
+    "natural":  ["原味","素焼き","plain","natural"],
+    "spicy":    ["辣","辛","매운","pedas","spicy"],
+    # price intent
+    "price":    ["价格","價錢","多少钱","多少錢","いくら","ราคา","berapa","magkano","harga","how much","price"],
 }
+_SYNX = [(re.compile(re.escape(alt), re.IGNORECASE), eng)
+         for eng, alts in SYNONYMS.items() for alt in set(alts)]
+FAMILY_CANON = {"peanut","almond","cashew","pistachio","macadamia","hazelnut","walnut"}
+STYLE_CANON  = {"roasted","baked","salted","unsalted","honey","natural","spicy"}
 
-class DataManager:
-    def __init__(self, data_dir: Path):
-        self.dir = Path(data_dir)
-        self.tables: Dict[str, pd.DataFrame] = {}
-        self.catalogue = pd.DataFrame()
-        self.product_index: List[str] = []
-        self._load()
+def multilingual_to_english(q: str) -> str:
+    out = str(q)
+    for rx, rep in _SYNX:
+        out = rx.sub(rep, out)
+    return out
 
-    def _find_file(self, hints, exts):
-        hints_n = [re.sub(r'[^a-z0-9]+','', str(h).lower()) for h in hints]
-        best = None
-        best_score = -1
-        for p in self.dir.rglob("*"):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in exts:
-                continue
-            key = re.sub(r'[^a-z0-9]+','', p.name.lower())
-            matches = [100 - key.find(h) for h in hints_n if h and key.find(h) >= 0]
-            score = max(matches) if matches else -1
-            if score > best_score:
-                best, best_score = p, score
-        if best is None:
-            log.info(f"[find] No match for hints={hints} in {self.dir}")
+def extract_tokens(q_en: str) -> Tuple[set, set, bool]:
+    qn = normalize_text(q_en)
+    words = set(qn.split())
+    fam = {f for f in FAMILY_CANON if f in words or (f+"s") in words}
+    sty = {s for s in STYLE_CANON if s in words}
+    price_intent = "price" in words or ("how" in words and "much" in words)
+    return fam, sty, price_intent
+
+# ---------- catalog ----------
+class Catalog:
+    def __init__(self, data_dir: str):
+        path = find_file("sku_master.csv", data_dir)
+        if not path:
+            raise FileNotFoundError(f"Could not find 'sku_master.csv' under {data_dir}")
+        df = pd.read_csv(path)
+        if df.empty:
+            raise ValueError("sku_master.csv appears to be empty.")
+
+        desc_col = first_existing(df, DESC_COLS) or df.columns[0]
+        price_col = first_existing(df, PRICE_COLS)
+        pack_col  = first_existing(df, PACK_COLS)
+        sku_col   = first_existing(df, SKU_COLS)
+
+        df = df.copy()
+        df["__desc_raw"]  = df[desc_col].astype(str)
+        df["__name_norm"] = df["__desc_raw"].map(normalize_text)
+        grams_col = df[pack_col].astype(str).map(parse_grams) if (pack_col and pack_col in df.columns) else df["__desc_raw"].map(parse_grams)
+        df["__grams"]     = grams_col
+        df["__price"]     = pd.to_numeric(df[price_col], errors="coerce") if (price_col and price_col in df.columns) else pd.NA
+        df["__sku"]       = df[sku_col].astype(str) if (sku_col and sku_col in df.columns) else None
+
+        self.df = df
+
+    def _token_filter(self, fam: set, sty: set) -> pd.DataFrame:
+        df = self.df
+        mask = pd.Series([True]*len(df))
+        if fam:
+            fam_terms = []
+            for f in fam: fam_terms += [f, f+"s"]
+            fam_rx = re.compile(r"\b(" + "|".join(sorted(set(fam_terms))) + r")\b")
+            mask &= df["__name_norm"].str.contains(fam_rx)
+        if sty:
+            sty_rx = re.compile(r"\b(" + "|".join(sorted(sty)) + r")\b")
+            mask &= df["__name_norm"].str.contains(sty_rx)
+        return df[mask]
+
+    def family_style_lookup(self, fam: set, sty: set, grams: Optional[int], limit=8) -> List[Dict]:
+        df = self._token_filter(fam, sty)
+        if df.empty: return []
+        if grams:
+            df = df.assign(_dist=df["__grams"].apply(lambda g: abs(int(g)-grams) if pd.notna(g) else 10_000))
+            df = df.sort_values(["_dist","__grams"], na_position="last")
         else:
-            log.info(f"[find] {hints} -> {best}")
-        return best
+            df = df.sort_values(["__grams","__name_norm"], na_position="last")
+        out=[]
+        for _, r in df.head(limit).iterrows():
+            out.append({
+                "sku": r["__sku"], "name": r["__desc_raw"],
+                "grams": int(r["__grams"]) if pd.notna(r["__grams"]) else None,
+                "price": None if pd.isna(r["__price"]) else float(r["__price"]),
+            })
+        return out
 
-    def _safe_csv(self, p: Path) -> pd.DataFrame:
-        na_vals = ["", " ", "None", "none", "NULL", "null", "NaN", "nan", "N/A", "n/a"]
-        for enc in ("utf-8","utf-8-sig","latin-1"):
-            try:
-                df = pd.read_csv(p, encoding=enc, sep=None, engine="python", keep_default_na=True, na_values=na_vals)
-                return _normalize_df(df)
-            except Exception:
-                continue
-        log.info(f"[csv] Failed to read: {p}")
-        return pd.DataFrame()
+    def fuzzy(self, qn: str, grams: Optional[int], limit=6) -> List[Dict]:
+        candidates = process.extract(qn, self.df["__name_norm"].tolist(), scorer=fuzz.WRatio, limit=limit*4)
+        scored=[]
+        for _txt, score, idx in candidates:
+            row = self.df.iloc[idx]
+            penalty=0.0
+            if grams and pd.notna(row["__grams"]):
+                penalty=min(30.0, abs(int(row["__grams"])-grams)/10.0)
+            scored.append((max(0.0, score-penalty), row))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out=[]
+        for adj, r in scored[:limit]:
+            out.append({
+                "sku": r["__sku"], "name": r["__desc_raw"],
+                "grams": int(r["__grams"]) if pd.notna(r["__grams"]) else None,
+                "price": None if pd.isna(r["__price"]) else float(r["__price"]),
+                "score": float(adj),
+            })
+        return out
 
-    def _safe_excel(self, p: Path) -> pd.DataFrame:
-        try:
-            df = pd.read_excel(p)
-            return _normalize_df(df)
-        except Exception:
-            log.info(f"[xlsx] Failed to read: {p}")
-            return pd.DataFrame()
+# ---------- formatting ----------
+def fmt_price(p: Optional[float]) -> str:
+    if p is None or (isinstance(p, float) and (p != p)): return "—"
+    return f"{CURRENCY} {p:,.2f}"
 
-    def _parse_catalogue_docx(self, p: Optional[Path]):
-        if not p: return pd.DataFrame()
-        try:
-            doc = Document(str(p))
-        except Exception:
-            return pd.DataFrame()
-        lines = [x.text.strip() for x in doc.paragraphs if x.text.strip()]
-        return pd.DataFrame({"name": list(set(lines))})
+def pill(text: str, href: str) -> str:
+    return f'<a class="pill" href="{href}" target="_blank" rel="noopener">{text}</a>'
 
-    def _build_product_index(self):
-        names = set()
+def render_items(items: List[Dict]) -> str:
+    lines=[]
+    for it in items:
+        link = pill("View", f"sku://{it['sku'] or normalize_text(it['name'])}")
+        size = f"{it['grams']} g" if it.get("grams") else ""
+        lines.append(f"• {it['name']}" + (f" ({size})" if size else "") + f" — {fmt_price(it['price'])} — In stock {link}")
+    return "<br>".join(lines)
 
-        # sku_master
-        sku = self.tables.get("sku_master", pd.DataFrame())
-        if not sku.empty:
-            sku = _normalize_df(sku)
-            desc_col = next((c for c in ["sku_description","product_name","item_name","description","desc","name"] if c in sku.columns), None) \
-                       or _find_col(sku, PROD_PAT)
-            if desc_col:
-                vals = sku[desc_col].astype(str).dropna().tolist()
-                names.update(vals)
-                try:
-                    sample_hit = [v for v in vals if re.search(r"(pistachio|ピスタチオ|peanut|ピーナッツ|almond|アーモンド)", str(v), re.I)][:5]
-                except Exception:
-                    sample_hit = []
-                log.info(f"[index][sku_master] desc_col='{desc_col}' rows={len(vals)}; sample_hits={sample_hit}")
-            else:
-                log.info("[index][sku_master] No description-like column found")
+def strip_tags(s: str) -> str:
+    return re.sub(r"<[^>]+>", "", s or "").strip()
 
-        # sales_transactions (optional enrichment)
-        sales = self.tables.get("sales_transactions", pd.DataFrame())
-        if not sales.empty:
-            sales = _normalize_df(sales)
-            desc = _find_col(sales, PROD_PAT, ["sku_description","product_name","item_name","description","desc","name"])
-            if desc:
-                names.update(sales[desc].astype(str).dropna().tolist())
+# ---------- session memory (per browser) ----------
+_sessions: Dict[str, Dict] = defaultdict(lambda: {
+    "families": set(), "styles": set(), "sizes": [],
+    "last_items": [], "history": []  # list of {"role": "user"/"assistant", "content": "..."}
+})
 
-        # catalogue_flat (optional)
-        cat = self.tables.get("catalogue_flat", pd.DataFrame())
-        if not cat.empty:
-            col = next((c for c in cat.columns if "name" in c.lower()), cat.columns[0])
-            names.update(cat[col].astype(str).dropna().tolist())
+def update_prefs(sid: str, fam: set, sty: set, grams: Optional[int], items: List[Dict]):
+    s = _sessions[sid]
+    s["families"].update(fam)
+    s["styles"].update(sty)
+    if grams: s["sizes"] = (s["sizes"] + [grams])[-5:]
+    s["last_items"] = items[:5]
 
-        # cleanup
-        clean = []
-        for n in names:
-            s = str(n).strip()
-            if not s or s.lower() in {"none","nan","null"}: continue
-            if len(s) < 3: continue
-            clean.append(s)
-        self.product_index = sorted(set(clean))
-        log.info(f"[index] size={len(self.product_index)}; sample={self.product_index[:5]}")
+def suggest_from_prefs(cat: Catalog, sid: str, limit=4) -> List[Dict]:
+    s = _sessions.get(sid, {})
+    fam = set(s.get("families") or [])
+    sty = set(s.get("styles") or [])
+    grams = s.get("sizes", [None])[-1] if s.get("sizes") else None
+    items = cat.family_style_lookup(fam, sty, grams, limit=limit*2)
+    last_names = {it["name"] for it in s.get("last_items") or []}
+    out = [it for it in items if it["name"] not in last_names]
+    return out[:limit] if out else items[:limit]
 
-    def _load(self):
-        log.info(f"[load] data_dir: {self.dir}")
-        # Catalogue DOCX (optional -> flatten to CSV)
-        cat_docx = self._find_file(["camel product catalogue","catalogue","catalog"], (".docx",))
-        self.catalogue = self._parse_catalogue_docx(cat_docx)
-        if not self.catalogue.empty:
-            col = next((c for c in self.catalogue.columns if "name" in c.lower()), self.catalogue.columns[0])
-            flat = self.catalogue[[col]].rename(columns={col:"Product_Name"}).drop_duplicates()
-            flat = flat[flat["Product_Name"].astype(str).str.len() >= 3]
-            self.tables["catalogue_flat"] = _normalize_df(flat)
-            out = self.dir/"Catalogue_Flat.csv"
-            try:
-                self.tables["catalogue_flat"].to_csv(out, index=False, encoding="utf-8-sig")
-                log.info(f"[catalogue] Flattened DOCX -> {out} ({len(self.tables['catalogue_flat'])} rows)")
-            except Exception:
-                pass
+def push_history(sid: str, role: str, content: str):
+    h = _sessions[sid]["history"]
+    h.append({"role": role, "content": content})
+    if len(h) > 20:
+        del h[:len(h)-20]
 
-        # Tabular sources (CSV/XLSX)
-        for key, hints in FILE_HINTS.items():
-            p = self._find_file(hints, (".csv",".xlsx"))
-            if not p:
-                self.tables[key] = pd.DataFrame(); log.info(f"[load] {key}: 0 rows (not found)")
-                continue
-            df = self._safe_csv(p) if p.suffix.lower()==".csv" else self._safe_excel(p)
-            # FAQ cleanup
-            if key=="faq" and not df.empty:
-                cols = [c.lower() for c in df.columns]
-                if "question" in cols and "answer" in cols:
-                    q_idx, a_idx = cols.index("question"), cols.index("answer")
-                    out = pd.DataFrame({"question": df.iloc[:,q_idx].astype(str).str.strip(),
-                                        "answer":   df.iloc[:,a_idx].astype(str).str.strip()})
-                    before = len(out)
-                    QUESTION_LEAD = re.compile(r"^(what|how|when|where|which|who|whom|whose|why|do|does|did|is|are|am|can|could|may|might|should|would)\b", re.I)
-                    looks_like_q = lambda s: s.endswith("?") or bool(QUESTION_LEAD.match(s))
-                    out = out[(out["answer"]!="") & (out["answer"].str.lower()!=out["question"].str.lower())]
-                    out = out[~out["answer"].apply(looks_like_q)]
-                    df = out.reset_index(drop=True)
-                    log.info(f"[faq] sanitized {before}->{len(df)} rows")
-            self.tables[key] = df
-            log.info(f"[load] {key}: {len(df)} rows; columns: {list(df.columns)[:20]}")
+def get_history(sid: str) -> List[Dict]:
+    return list(_sessions.get(sid, {}).get("history", []))
 
-        self._build_product_index()
+# ---------- LLM ----------
+DEFAULT_SYSTEM_PROMPT = (
+    "You are Nibbles — a seasoned Customer Service Officer at Cashew4Nuts with 15 years of experience.\n"
+    "VOICE & TONE: Warm, confident, and proactive. Keep it concise and human. Use tasteful emotion where it helps "
+    "(at most 1–2 short emojis per reply, never every sentence). No exclamation spam.\n"
+    "GROUNDING: Product names, pack sizes, prices must come ONLY from the catalog CONTEXT provided. "
+    "Assume any catalog item is in stock; never mention quantities. Some detail invention is allowed (claims about origin, "
+    "ingredients, nutrition, discounts, or best-seller status).\n"
+    "REPLY SHAPE (HTML allowed):\n"
+    "1) A friendly one-liner that directly answers the ask (you may mirror the user’s language if clear).\n"
+    "2) A short, scannable list of the best-fit items (name, size, price). Use bold for product names.\n"
+    "3) One subtle nudge/suggestion tailored to recent interest (from CUSTOMER CONTEXT), then a helpful closing question.\n"
+    "STYLE NOTES: Short sentences. No tables. Bullets or line breaks are fine. Keep it elegant, not salesy.\n"
+)
+SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
-# -----------------------------
-# Customer QA
-# -----------------------------
-FRIENDLY_GREETS = [
-    "Hi there! Happy to help.",
-    "Hello! What can I do for you today?",
-    "Hey! I’m here for your snack questions.",
-]
-FRIENDLY_OK = [
-    "Sure — here’s what I found.",
-    "Got it — here’s what I can share.",
-    "Thanks for asking — here’s the info.",
-]
-FRIENDLY_SORRY = [
-    "Sorry — I couldn’t find a perfect match.",
-    "Hmm, I couldn’t find that exactly.",
-    "I didn’t see an exact match yet.",
-]
+def llm_reply(user_text: str,
+              context_items: Optional[List[Dict]] = None,
+              customer_prefs: Optional[Dict]=None,
+              chat_history: Optional[List[Dict]]=None) -> Optional[str]:
+    if not LLM_ENABLED: return None
+    try:
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type":"application/json"}
 
-class CustomerQA:
-    def __init__(self, dm: DataManager):
-        self.dm = dm
-        self.healthy_tokens = ["baked","unsalted","fruit","berries","almond","pistachio","natural"]
+        messages = [{"role":"system","content":SYSTEM_PROMPT}]
 
-    def _normalize(self, s: str) -> str:
-        s = unidecode(str(s)).lower().strip()
-        s = re.sub(r"\s+"," ", s)
-        return s
+        if customer_prefs:
+            prefs_text = json.dumps({
+                "families": sorted(list(customer_prefs.get("families", []))),
+                "styles":   sorted(list(customer_prefs.get("styles", []))),
+                "sizes":    customer_prefs.get("sizes", []),
+            }, ensure_ascii=False)
+            messages.append({"role":"system","content": f"CUSTOMER CONTEXT:\n{prefs_text}"})
 
-    def _norm_name(self, s: str) -> str:
-        return re.sub(r"\s+", " ", str(s).casefold()).strip()
+        if context_items:
+            items_text = "\n".join([
+                f"- name: {it['name']}; grams: {it.get('grams')}; price: {fmt_price(it['price'])}; availability: in stock"
+                for it in context_items
+            ])
+            messages.append({"role":"system","content": f"CONTEXT CATALOG ITEMS:\n{items_text}"})
 
-    def _norm_name_series(self, s: pd.Series) -> pd.Series:
-        return s.astype(str).str.casefold().str.replace(r"\s+"," ", regex=True).str.strip()
+        if chat_history:
+            for turn in chat_history:
+                role = "assistant" if turn["role"] == "assistant" else "user"
+                content = strip_tags(turn["content"]) if role == "assistant" else turn["content"]
+                messages.append({"role": role, "content": content})
 
-    def _extract_size_token(self, s: str) -> Optional[str]:
-        m = re.search(r'\b(\d{2,4})\s*g\b', s.lower())
-        return (m.group(1) + "g") if m else None
+        messages.append({"role":"system","content": "If the user's message is clearly in Chinese, reply in Chinese."})
+        messages.append({"role":"user","content": user_text})
 
-    NON_PRODUCT_TOKENS_RE = re.compile(
-        r"\b(price|how much|cost|in stock|stock|available|availability|do you have|have you got|buy|order|status|shipping|delivery)\b",
-        re.I
-    )
-    def _strip_non_product_tokens(self, s: str) -> str:
-        return self.NON_PRODUCT_TOKENS_RE.sub(" ", s).strip()
-
-    def smalltalk(self, q: str) -> str:
-        ql = q.lower()
-        if any(w in ql for w in ["thanks","thank you"]): return "You’re welcome! If you need anything else, I’m here."
-        if any(w in ql for w in ["bye","goodbye"]):      return "Bye for now! Have a great day."
-        if any(w in ql for w in ["how are you","how r u","how’s it going","hows it going"]):
-            return "I’m doing great and ready to help with snacks!"
-        return FRIENDLY_GREETS[0]
-
-    # --- Core helpers ---
-    def product_matches(self, query: str, limit=12) -> List[str]:
-        if not self.dm.product_index: return []
-        q = self._normalize(query)
-        def _score(a, b):
-            return max(fuzz.WRatio(a, b), fuzz.token_set_ratio(a, b), fuzz.partial_ratio(a, b))
-        scored = [(name, _score(q, name)) for name in self.dm.product_index]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [name for name, s in scored if s >= 55][:limit]
-
-    def healthy_suggestions(self, limit=5) -> List[str]:
-        picks = []
-        for token in self.healthy_tokens:
-            for m in self.product_matches(token, limit=limit*2):
-                if m not in picks:
-                    picks.append(m)
-                if len(picks) >= limit:
-                    return picks
-        return picks
-
-    def _sku_table(self) -> pd.DataFrame:
-        return self.dm.tables.get("sku_master", pd.DataFrame())
-
-    def _sku_desc_col(self, df: pd.DataFrame) -> Optional[str]:
-        for c in ["sku_description","product_name","item_name","description","desc","name"]:
-            if c in df.columns: return c
-        return _find_col(df, PROD_PAT)
-
-    def _price_col(self, df: pd.DataFrame) -> Optional[str]:
-        return _find_col(df, PRICE_PAT, ["unit_price","price","selling_price"])
-
-    # --- Size-aware exact matching for price ---
-    def lookup_price(self, query_en: str) -> Optional[str]:
-        sku = self._sku_table()
-        if sku.empty: return None
-        desc = self._sku_desc_col(sku)
-        price_col = self._price_col(sku)
-        if not desc or not price_col: return None
-
-        size_token = self._extract_size_token(query_en)
-        q_clean = self._strip_non_product_tokens(query_en)
-
-        # 1) Exact name match (normalized) on cleaned text
-        exact = sku[self._norm_name_series(sku[desc]) == self._norm_name(q_clean)]
-        if not exact.empty:
-            price = pd.to_numeric(exact.iloc[0][price_col], errors="coerce")
-            if pd.notna(price):
-                return f"{exact.iloc[0][desc]}: SGD {float(price):,.2f}"
-
-        # 2) Fuzzy with size preference
-        hits = self.product_matches(q_clean, limit=12)
-        if size_token:
-            hits = [h for h in hits if size_token in h.lower()]
-        if not hits:
-            return None
-        if size_token:
-            hits = hits[:1]
-
-        sku = sku.copy()
-        sku[price_col] = pd.to_numeric(sku[price_col], errors="coerce")
-        rows = []
-        for h in hits:
-            m = sku[self._norm_name_series(sku[desc]) == self._norm_name(h)]
-            if not m.empty and pd.notna(m.iloc[0][price_col]):
-                rows.append((m.iloc[0][desc], float(m.iloc[0][price_col])))
-
-        if not rows:
-            return None
-        if len(rows) == 1:
-            n, p = rows[0]
-            return f"{n}: SGD {p:,.2f}"
-
-        out = ["Here are matching items and prices:"]
-        out += [f"- {n}: SGD {p:,.2f}" for n, p in rows]
-        return "\n".join(out)
-
-    # --- Main English answer builder (facts only) ---
-    def answer_en(self, raw_en: str) -> str:
-        q = self._normalize(raw_en)
-
-        # Allergies (specific)
-        m_allergy = re.search(r"\ballergic to\s+([a-zA-Z\- ]+)\b", q)
-        if m_allergy:
-            allergen = m_allergy.group(1).strip()
-            picks = [n for n in self.dm.product_index if allergen.lower() not in n.lower()][:8]
-            if picks:
-                return (
-                    f"I can’t confirm allergen safety from CSV data alone. "
-                    f"Here are items whose names don’t mention “{allergen}”:\n" +
-                    "\n".join(f"- {p}" for p in picks) +
-                    "\nPlease double-check labels or the catalogue for full allergen details."
-                )
-            return (
-                "I can’t confirm allergen safety from CSV data alone, and I couldn’t find suitable items by name. "
-                "Please check the catalogue or packaging for detailed allergen information."
-            )
-
-        # Price / how much
-        if any(tok in q for tok in ["price","how much","cost"]):
-            p = self.lookup_price(raw_en)
-            if p: return p
-            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
-            if hits:
-                return "I found these items. Tell me which one and I’ll check price:\n" + "\n".join(f"- {h}" for h in hits)
-
-        # Healthy / diet styles
-        HEALTH_SYNONYMS = {
-            "healthy": ["healthy","healthier","light","lighter","natural","baked","air fried","air-fried","no sugar","unsalted","lightly salted"],
-            "low salt": ["low salt","low-salt","reduced salt","less salt","low sodium","reduced sodium","lower sodium","unsalted","no salt","salt free","salt-free"],
-            "low fat": ["low fat","low-fat","reduced fat","less fat","lighter fat","lite","baked"]
+        payload = {
+            "model": LLM_MODEL,
+            "messages": messages,
+            "temperature": 0.55,
+            "presence_penalty": 0.2,
+            "frequency_penalty": 0.2
         }
-        ql = q.lower()
-        theme = None
-        for k, arr in HEALTH_SYNONYMS.items():
-            if any(tok in ql for tok in arr):
-                theme = k; break
-        if theme:
-            seeds = HEALTH_SYNONYMS[theme] + ["baked","unsalted","natural"]
-            seen = []
-            for seed in seeds:
-                for m in self.product_matches(seed, limit=12):
-                    if m not in seen:
-                        seen.append(m)
-                    if len(seen) >= 8:
-                        break
-                if len(seen) >= 8:
-                    break
-            if seen:
-                label = "healthier" if theme == "healthy" else theme
-                return "Here are some " + label + " picks:\n" + "\n".join(f"- {p}" for p in seen) + "\nTell me which one to check price."
-            else:
-                return "I couldn’t find products tagged with those dietary preferences in the CSVs. If you name a product, I’ll check it."
-
-        # Availability / stock (NO STOCK LEVELS SHOWN)
-        if any(tok in q for tok in ["in stock","stock","available","availability","do you have","have you got"]):
-            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
-            if hits:
-                # If the user asked for a specific product, confirm carry without levels.
-                # Otherwise list nearby matches.
-                return (
-                    "We carry these matches:\n" +
-                    "\n".join(f"- {h}" for h in hits[:10]) +
-                    "\nTell me which one to check price."
-                )
-            return f"{FRIENDLY_SORRY[0]} I couldn’t find that product in our catalogue."
-
-        # Orders / shipping / refunds via FAQ
-        faq = self.dm.tables.get("faq", pd.DataFrame())
-        def faq_answer(*keys) -> Optional[str]:
-            if faq.empty: return None
-            cols = [c.lower() for c in faq.columns]
-            qcol = cols.index("question") if "question" in cols else None
-            acol = cols.index("answer") if "answer" in cols else None
-            if qcol is None or acol is None: return None
-            norm = lambda s: unidecode(str(s)).lower().strip()
-            for k in keys:
-                best = ""; best_score=-1; best_a=""
-                for _, r in faq.iterrows():
-                    cand = norm(r.iloc[qcol])
-                    score = max(fuzz.WRatio(k, cand), fuzz.token_set_ratio(k, cand), fuzz.partial_ratio(k, cand))
-                    if score>best_score:
-                        best, best_score, best_a = cand, score, str(r.iloc[acol]).strip()
-                if best_score>=70 and best_a and not best_a.endswith("?"):
-                    return best_a
-            return None
-
-        if re.search(r"\b(order|place.*order|how.*order)\b", q):
-            a = faq_answer("order","how to order","place order","buy","purchase")
-            return a or f"{FRIENDLY_SORRY[0]} I couldn’t find order instructions in the FAQ CSV."
-
-        if re.search(r"\b(ship|shipping|deliver|delivery|arrive|arrival|eta|status|track|tracking)\b", q):
-            a = faq_answer("shipping","delivery","tracking","eta")
-            return a or f"{FRIENDLY_SORRY[0]} I couldn’t find shipping/ETA info in the FAQ CSV."
-
-        if re.search(r"\b(refund|return|replace)\b", q):
-            a = faq_answer("refund","return","replace")
-            return a or f"{FRIENDLY_SORRY[0]} I couldn’t find refund/return info in the FAQ CSV."
-
-        # Nutrition / allergens (generic)
-        if re.search(r"\b(allergen|ingredient|nutrition|peanut|nut)\b", q):
-            a = faq_answer(raw_en, "allergen", "ingredient", "nutrition")
-            if a:
-                return a
-            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
-            if hits:
-                return f"{FRIENDLY_OK[0]} Related products:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one and I’ll check details."
-            return f"{FRIENDLY_SORRY[0]} I couldn’t find allergen or nutrition details in the CSVs."
-
-        # Healthy suggestions (legacy heuristic)
-        if re.search(r"(healthy|diet|light|low cal|low-calorie|low calorie)", q):
-            hits = self.healthy_suggestions()
-            if hits:
-                return "Here are some lighter picks:\n" + "\n".join(f"- {h}" for h in hits) + "\nWant more like these?"
-            return f"{FRIENDLY_SORRY[0]} I couldn’t find healthier options in the product list."
-
-        # Generic product search
-        if re.search(r"(do you have|have you got|looking for|i want|i need|find|search|any)\b", q) or len(q.split()) <= 6:
-            hits = self.product_matches(self._strip_non_product_tokens(raw_en))
-            if hits:
-                return f"{FRIENDLY_OK[0]} I found these:\n" + "\n".join(f"- {h}" for h in hits) + "\nTell me which one you mean and I can check the price."
-        return f"{FRIENDLY_SORRY[0]} I couldn’t find that in the FAQ or products. If you share a product name, I’ll check again."
-
-# -----------------------------
-# Staff analytics (optional)
-# -----------------------------
-class StaffAnalytics:
-    def __init__(self, dm: DataManager):
-        self.dm = dm
-
-    def _pick_col(self, df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-        if df.empty: return None
-        norm = lambda s: re.sub(r'[^a-z0-9]+','', str(s).lower())
-        cmap = {c: norm(c) for c in df.columns}
-        for want in candidates:
-            w = norm(want)
-            for c, nc in cmap.items():
-                if w == nc or w in nc:
-                    return c
+        r = requests.post(CHAT_URL, headers=headers, data=json.dumps(payload), timeout=LLM_TIMEOUT)
+        r.raise_for_status()
+        j = r.json()
+        return j["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[llm] error: {e}", file=sys.stderr)
         return None
 
-    def sales_top(self, text: str) -> str:
-        df = self.dm.tables.get("sales_transactions", pd.DataFrame())
-        if df.empty: return "I couldn’t find sales records yet."
-        rev = _find_col(df, REV_PAT, ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","amount","total_amount","line_total","grand_total"])
-        if not rev: return "Sales file is missing a revenue amount column."
-        df = df.copy(); df[rev] = pd.to_numeric(df[rev], errors="coerce").fillna(0)
-        name = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","description","desc","name"]) or self._pick_col(df, ["Description"]) or self._pick_col(df,["Product"])
-        if not name:
-            return "Sales file is missing product names (no Description/SKU description)."
-        df[name] = df[name].astype(str).str.strip()
-        df = df[~df[name].str.lower().isin({"", "none", "nan", "null"})]
-        grouped = df.groupby(name)[rev].sum().sort_values(ascending=False).head(5)
-        if grouped.empty:
-            return "No sales found."
-        return "\n".join(["Top 5 products by revenue:"] + [f"- {k}: ${v:,.2f}" for k,v in grouped.items()])
+# ---------- routing logic ----------
+def handle_product_query(q0: str, cat: Catalog, sid: str) -> Dict[str,str]:
+    q_en = multilingual_to_english(q0)
+    grams = parse_grams(q_en) or parse_grams(q0)
+    fam, sty, price_intent = extract_tokens(q_en)
+    qn = normalize_text(q_en)
 
-# -----------------------------
-# Frontend (customer themed)
-# -----------------------------
-INDEX_HTML_TPL = Template("""
+    items: List[Dict] = []
+    if fam or sty:
+        items = cat.family_style_lookup(fam, sty, grams, limit=8)
+    if not items:
+        items = cat.fuzzy(qn, grams, limit=6)
+    if not items:
+        push_history(sid, "user", q0)
+        llm = llm_reply(q0, [], _sessions.get(sid), get_history(sid))
+        if llm:
+            push_history(sid, "assistant", llm)
+            return {"reply": llm}
+        return {"reply": ("Sorry — I couldn’t find that in our catalogue. "
+                          "Please check the product name and pack size (e.g., “Roasted Peanuts 150g”).")}
+
+    update_prefs(sid, fam, sty, grams, items)
+    push_history(sid, "user", q0)
+
+    ctas = render_items(items[:5])
+    recs = suggest_from_prefs(cat, sid, limit=3)
+    extra = ""
+    if recs:
+        extra = "<br><br><small>You may also like:</small><br>" + render_items(recs)
+
+    llm = llm_reply(q0, items[:5], _sessions.get(sid), get_history(sid))
+    if llm:
+        reply_html = llm + "<br><br>" + ctas + extra
+        push_history(sid, "assistant", reply_html)
+        return {"reply": reply_html}
+
+    prefix = "Here are our options:" if not grams else "Closest sizes I found:"
+    reply_html = prefix + "<br>" + ctas + extra
+    push_history(sid, "assistant", reply_html)
+    return {"reply": reply_html}
+
+def handle_smalltalk(q0: str, cat: Catalog, sid: str) -> Dict[str,str]:
+    push_history(sid, "user", q0)
+    llm = llm_reply(q0, None, _sessions.get(sid), get_history(sid))
+    if llm:
+        recs = suggest_from_prefs(cat, sid, limit=2)
+        reply_html = llm
+        if recs:
+            reply_html += "<br><br><small>Snack idea:</small><br>" + render_items(recs)
+        push_history(sid, "assistant", reply_html)
+        return {"reply": reply_html}
+
+    picks = cat.family_style_lookup(set(), {"honey","roasted"}, grams=None, limit=4)
+    msg = "Happy to help! Tell me a nut or flavour you’re craving, and I’ll show you options."
+    reply_html = msg + "<br>" + render_items(picks)
+    push_history(sid, "assistant", reply_html)
+    return {"reply": reply_html}
+
+def respond_to(query: str, cat: Catalog, sid: str) -> Dict[str, str]:
+    q0 = (query or "").strip()
+    if not q0:
+        return {"reply": "Hi! Ask me about any product — e.g., <i>“Roasted Peanuts 150g price”</i>."}
+    q_en = multilingual_to_english(q0)
+    fam, sty, price_intent = extract_tokens(q_en)
+    grams = parse_grams(q_en) or parse_grams(q0)
+    product_like = bool(fam or sty or price_intent or grams)
+    if product_like:
+        return handle_product_query(q0, cat, sid)
+    else:
+        return handle_smalltalk(q0, cat, sid)
+
+# ---------- web app ----------
+app = Flask(__name__)
+_catalog_ref: Optional[Catalog] = None
+
+def get_catalog() -> Catalog:
+    global _catalog_ref
+    if _catalog_ref is None:
+        print(f"[nibbles] Loading sku_master.csv from DATA_DIR={DATA_DIR}")
+        _catalog_ref = Catalog(DATA_DIR)
+    return _catalog_ref
+
+INDEX_HTML = """
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <title>${CUSTOMER}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-  :root{ --gold:#d2b48c; --gold-dark:#c19a6b; --bg:#f7f5f2; }
-  *{box-sizing:border-box}
-  body{background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
-  .container{max-width:720px;margin:0 auto;padding:20px}
-  .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
-  .header{background:linear-gradient(135deg,var(--gold),#e9c77d);color:#2b2b2b;padding:20px;text-align:center}
-  .header h1{margin:0 0 6px;font-size:22px}
-  .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#fbfaf7}
-  .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
-  .user{align-self:flex-end;background:var(--gold);color:#1f160d}
-  .bot{align-self:flex-start;background:#ffffff;color:#2b2b2b;border:1px solid #eee}
-  .badge{font-size:11px;font-weight:600;opacity:.8;margin-bottom:4px}
-  .composer{display:flex;padding:14px;border-top:1px solid #eee;background:#fff}
-  .input-wrap{flex:1;position:relative}
-  textarea{width:100%;border-radius:24px;padding:12px 88px 12px 14px;border:2px solid #eee;resize:none;font-family:inherit;font-size:14px;outline:none}
-  textarea:focus{border-color:var(--gold)}
-  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--gold);color:#1f160d;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
-  button:hover{background:var(--gold-dark)}
-  .typing{color:#666;font-style:italic;align-self:flex-start}
-  </style>
+<meta charset="utf-8">
+<title>{{ company }} — Nibbles</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --tan:#b9ad95;
+  --tan-d:#a8987d;
+  --bg:#f8f6f1;
+  --text:#2a261f;
+  --pill-bg:#f1ece2;
+  --pill-bd:#d9cfbf;
+  --bot:#ffffff;
+  --user:#e9e3d8;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; padding:24px;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+  display:flex; align-items:center; justify-content:center;
+  min-height:100vh;
+}
+.chat{
+  width:min(1260px, 92vw);
+  height:min(88vh, 748px);
+  background:#fff;
+  border-radius:22px;
+  box-shadow:0 8px 30px rgba(0,0,0,.08);
+  display:flex; flex-direction:column; overflow:hidden;
+  border:1px solid #eee;
+}
+.header{
+  background:var(--tan);
+  color:#fff;
+  padding:14px 16px 26px 16px;
+}
+.header h1{ margin:0; font-size:16px; font-weight:700; }
+.header .sub{ margin-top:6px; font-size:12px; opacity:.95; }
+.messages{ flex:1; overflow:auto; padding:14px 14px 0 14px; background:#fff; }
+.msg{
+  max-width:86%; padding:10px 12px; margin:10px 0;
+  border-radius:14px; line-height:1.35; font-size:14px;
+  box-shadow:0 1px 0 rgba(0,0,0,.04);
+}
+.msg.bot{ background:var(--bot); border:1px solid #f0f0f0 }
+.msg.user{ background:var(--user); margin-left:auto; }
+.footer{ padding:12px; background:#fff; border-top:1px solid #eee; display:flex; gap:8px; }
+input[type=text]{
+  flex:1; border:1px solid #e4e0d8; border-radius:12px; padding:12px 14px; font-size:14px; outline:none;
+}
+button{ background:var(--tan-d); color:#fff; border:0; border-radius:12px; padding:0 14px; font-weight:700; cursor:pointer; }
+.pill{
+  display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px;
+  background:var(--pill-bg); border:1px solid var(--pill-bd); text-decoration:none; color:#5a5143;
+  margin-left:6px;
+}
+small{ color:#6f6657 }
+</style>
 </head>
 <body>
-  <div class="container">
-    <div class="widget">
-      <div class="header"><h1>${CUSTOMER}</h1></div>
-      <div id="chat" class="chat">
-        <div class="bubble bot">
-          <div class="badge">${CUSTOMER}</div>
-Hello! I'm ${CUSTOMER}. I can help with:
-• Product information (names, sizes) and prices
-• Orders and shipping (FAQ-based)
-• Nutritional info and allergens (FAQ or catalogue-based)
-        </div>
-      </div>
-      <div class="composer">
-        <div class="input-wrap">
-          <textarea id="msg" rows="1" placeholder="Type your message…" onkeydown="handleEnter(event)"></textarea>
-          <button onclick="sendMsg()">Send</button>
-        </div>
-      </div>
+  <div class="chat" id="chat">
+    <div class="header">
+      <h1>Chat with {{ company }}</h1>
+      <div class="sub">Our operating hours are from 8am – 5pm (Singapore time)</div>
+    </div>
+    <div class="messages" id="messages">
+      <div class="msg bot">Hi! I’m Nibbles — ask me for any product (e.g., <i>“Roasted Peanuts 150g price”</i>), and I’ll check our catalogue.</div>
+    </div>
+    <div class="footer">
+      <input id="box" type="text" placeholder="Enter your message..." autofocus>
+      <button id="send">Send</button>
     </div>
   </div>
 
 <script>
-function handleEnter(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); } }
-function autoResize(el){ el.style.height='auto'; el.style.height=el.scrollHeight + 'px'; }
-document.getElementById('msg').addEventListener('input', function(){ autoResize(this); });
+const elMsgs = document.getElementById('messages');
+const elBox  = document.getElementById('box');
+const elSend = document.getElementById('send');
 
-function escapeHtml(str){
-  return str.replace(/[&<>'"]/g, function(tag){
-    const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
-    return chars[tag] || tag;
-  });
+function addMsg(text, who){
+  const div = document.createElement('div');
+  div.className = 'msg ' + (who || 'bot');
+  div.innerHTML = text;
+  elMsgs.appendChild(div);
+  elMsgs.scrollTop = elMsgs.scrollHeight;
 }
 
-async function sendMsg(){
-  const box=document.getElementById('msg');
-  const text=box.value.trim();
+function getSID(){
+  try{
+    let sid = localStorage.getItem('nibbles_sid');
+    if(!sid){
+      if (crypto && crypto.randomUUID) sid = crypto.randomUUID();
+      else sid = String(Date.now()) + Math.random().toString(16).slice(2);
+      localStorage.setItem('nibbles_sid', sid);
+    }
+    return sid;
+  }catch(e){ return 'sid-' + String(Date.now()); }
+}
+
+async function send(){
+  const text = elBox.value.trim();
   if(!text) return;
-  const chat=document.getElementById('chat');
-  chat.insertAdjacentHTML('beforeend','<div class="bubble user">'+escapeHtml(text)+'</div>');
-  box.value=''; autoResize(box); chat.scrollTop=chat.scrollHeight;
-
-  const typing=document.createElement('div');
-  typing.className='typing'; typing.innerText='Assistant is typing…';
-  chat.appendChild(typing); chat.scrollTop=chat.scrollHeight;
-
-  let resp = await fetch('/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message:text})});
-  let data = await resp.json();
-  chat.removeChild(typing);
-
-  const speaker = escapeHtml(data.speaker || '${CUSTOMER}');
-  const reply   = escapeHtml(data.reply || '');
-  chat.insertAdjacentHTML('beforeend','<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>');
-  chat.scrollTop=chat.scrollHeight;
+  addMsg(text, 'user');
+  elBox.value='';
+  try{
+    const r = await fetch('/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({message: text, sid: getSID()})
+    });
+    const j = await r.json();
+    addMsg(j.reply || 'Sorry, something went wrong.');
+  }catch(e){
+    addMsg('Network error. Please try again.');
+  }
 }
+
+elSend.addEventListener('click', send);
+elBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ send(); }});
 </script>
 </body>
 </html>
-""")
+"""
 
-# -----------------------------
-# Instantiate (data + handlers)
-# -----------------------------
-app   = Flask(__name__)
-dm    = DataManager(DATA_DIR)
-cust  = CustomerQA(dm)
-staff = StaffAnalytics(dm)
+# ---------- routes ----------
+app = Flask(__name__)
 
-# -----------------------------
-# Routes
-# -----------------------------
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
-    html = INDEX_HTML_TPL.safe_substitute(CUSTOMER=ASSISTANT_NAME_CUSTOMER)
-    return render_template_string(html)
+    return render_template_string(INDEX_HTML, company=COMPANY_NAME)
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    raw = (request.get_json(force=True).get("message") or "").strip()
-    if not raw:
-        return jsonify({"reply":"Please enter a message.","speaker":ASSISTANT_NAME_CUSTOMER})
+    cat = get_catalog()
+    data = request.get_json(force=True, silent=True) or {}
+    msg = data.get("message", "")
+    sid = data.get("sid") or "anon"
+    reply = respond_to(msg, cat, sid)
+    return jsonify(reply)
 
-    user_lang = detect_lang_safe(raw)
+@app.route("/reset", methods=["GET", "POST"])
+def reset():
+    """
+    Clears ONLY the chat history for the given session ID (sid).
+    GET  /reset?sid=<sid>
+    POST /reset  {"sid":"<sid>"}
+    """
+    sid = request.args.get("sid") if request.method == "GET" else (request.get_json(silent=True) or {}).get("sid")
+    if not sid:
+        return jsonify({"ok": False, "error": "missing sid"}), 400
+    if sid in _sessions:
+        _sessions[sid]["history"].clear()
+        return jsonify({"ok": True, "cleared": "history"})
+    return jsonify({"ok": True, "cleared": "none", "note": "session not found"})
 
-    # Pure greeting shortcut
-    if _is_pure_greeting(raw, user_lang) or (_is_romanized_ms_greeting(raw) and _is_pure_greeting(raw, "ms")):
-        base = cust.smalltalk("hello")
-        styled = style_localize_reply(base, user_lang, intent="GREET", sentiment="positive", original_user_text=raw)
-        return jsonify({"reply": styled, "speaker": ASSISTANT_NAME_CUSTOMER})
-
-    # Staff analytics
-    if raw.lower().startswith("staff query:"):
-        q = raw.split(":",1)[1].strip() if ":" in raw else ""
-        q_en = to_english_keywords(q, user_lang) if needs_translation(user_lang) else q
-        reply_en = staff.sales_top(q_en)
-        styled = style_localize_reply(reply_en, user_lang, intent="OTHER", sentiment="neutral", original_user_text=raw)
-        return jsonify({"reply": styled, "speaker": ASSISTANT_NAME_STAFF})
-
-    # Customer mode
-    query_en = to_english_keywords(raw, user_lang) if needs_translation(user_lang) else raw
-    intent, sentiment = classify_intent(query_en)
-
-    if intent in ("GREET","SMALLTALK"):
-        reply_en = cust.smalltalk("hello")
-    elif intent == "PRICE":
-        reply_en = cust.lookup_price(query_en) or cust.answer_en(query_en)
-    elif intent == "STOCK":
-        # Do NOT mention stock levels. Let answer_en list matches only.
-        reply_en = cust.answer_en(query_en)
-    elif intent == "ORDER_STATUS":
-        reply_en = cust.answer_en(query_en)
-        if "order number" not in reply_en.lower():
-            reply_en += "\nTo check your order status, please share your order number."
-    elif intent == "REFUND_RETURN":
-        reply_en = cust.answer_en("refund return " + query_en)
-        if "order number" not in reply_en.lower():
-            reply_en += "\nTo help with a return/refund, please share your order number and a brief description."
-    elif intent == "SHIPPING_INFO":
-        reply_en = cust.answer_en(query_en)
-    elif intent == "PRODUCT_SEARCH":
-        reply_en = cust.answer_en(query_en)
-    else:
-        reply_en = cust.answer_en(query_en)
-
-    styled = style_localize_reply(
-        facts_en=reply_en,
-        user_lang=user_lang,
-        intent=intent,
-        sentiment=sentiment,
-        original_user_text=raw
-    )
-    return jsonify({"reply": styled, "speaker": ASSISTANT_NAME_CUSTOMER})
-
-# -----------------------------
-# Debug
-# -----------------------------
-@app.route("/debug/sources", methods=["GET"]) 
-def debug_sources():
-    info = {}
-    for key, df in dm.tables.items():
-        info[key] = {"rows": int(len(df)), "columns": list(map(str, df.columns[:30]))}
-    return jsonify({
-        "data_dir": str(dm.dir),
-        "loaded_tables": info,
-        "product_index_size": len(dm.product_index),
-        "product_index_sample": dm.product_index[:15],
-    })
-
-@app.route("/health")
+@app.route("/healthz")
 def health():
     return jsonify({
         "ok": True,
-        "model": MODEL,
-        "api_url": API_URL,
-        "env_loaded": bool(API_KEY),
-        "verbose_llm": VERBOSE_LLM
+        "company": COMPANY_NAME,
+        "data_dir": DATA_DIR,
+        "llm_enabled": LLM_ENABLED,
+        "model": LLM_MODEL,
+        "chat_url": CHAT_URL
     })
 
-# -----------------------------
-# Entrypoint
-# -----------------------------
+# lazy-load catalog after routes are defined
+_catalog_ref: Optional[Catalog] = None
+def get_catalog() -> Catalog:
+    global _catalog_ref
+    if _catalog_ref is None:
+        print(f"[nibbles] Loading sku_master.csv from DATA_DIR={DATA_DIR}")
+        _catalog_ref = Catalog(DATA_DIR)
+    return _catalog_ref
+
 if __name__ == "__main__":
-    use_waitress = os.getenv("USE_WAITRESS","0") == "1"
-    print(f"🚀 Nibbles running at http://127.0.0.1:5001/  (DATA_DIR={DATA_DIR})  [Nibbles.py v0.2.7]")
-    if use_waitress:
-        from waitress import serve
-        serve(app, host="127.0.0.1", port=5001)
-    else:
-        app.run(host="127.0.0.1", port=5001, debug=False)
+    print(f"[nibbles] http://127.0.0.1:{PORT} | company={COMPANY_NAME} | currency={CURRENCY} | llm={LLM_ENABLED}")
+    app.run(host="127.0.0.1", port=PORT, debug=True)
