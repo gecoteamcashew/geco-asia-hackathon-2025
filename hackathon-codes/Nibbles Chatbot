@@ -4,7 +4,6 @@
 # - Translation-first (LLM) with offline fallback; no hallucinated facts
 # - bitdeer.env loader for MODEL, API_URL, API_KEY
 # - Product index built from sku_master description-like columns (tolerant)
-# - Optional staff analytics behind "Staff query:"
 # - LLM intent detection + empathetic, localized style (facts remain from CSVs)
 # - Size-aware exact-match price lookup (e.g., “150g”)
 # - FIXES 0.2: UI-safe sanitizer prevents truncated foreign-language replies
