@@ -1,0 +1,773 @@
+# Clarity.py
+# Clarity: one unlocked assistant with dual persona
+# - Data/Sales/Analytics → Clarity tone
+# - Everything else → Nibbles tone
+#
+# Branding: default company is Cashew4Nuts.
+# Any occurrence of "Camel Nuts" (any case/spacing/hyphenation) is masked to "Cashew4Nuts".
+
+import os, re, sys, json, uuid, logging, subprocess
+from pathlib import Path
+from string import Template
+from typing import Dict, List, Optional, Tuple
+
+# -----------------------------
+# Logging
+# -----------------------------
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("chatbot")
+
+# -----------------------------
+# Dependencies
+# -----------------------------
+REQUIRED = [
+    "flask",
+    "pandas",
+    "fuzzywuzzy",
+    "python-levenshtein",
+    "requests",
+    "openpyxl",
+    "python-dotenv",
+]
+def ensure_deps():
+    import importlib
+    missing = []
+    for pkg in REQUIRED:
+        mod = "Levenshtein" if pkg == "python-levenshtein" else pkg
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        log.info(f"[deps] Installing missing packages: {', '.join(missing)}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+ensure_deps()
+
+import pandas as pd
+from flask import Flask, request, jsonify, render_template_string
+from fuzzywuzzy import fuzz
+import requests
+from dotenv import load_dotenv
+
+# -----------------------------
+# Env loading (prioritize bitdeer.env)
+# -----------------------------
+def _load_env_priority():
+    """
+    Priority order:
+    1) ENV_FILE env var (absolute or relative path)
+    2) bitdeer.env in script dir
+    3) bitdeer.env in CWD
+    4) bitdeer.env in parent of script dir
+    5) /mnt/data/bitdeer.env
+    6) Fallback: default .env (if present) and system env
+    """
+    candidates: List[Path] = []
+    env_file = os.getenv("ENV_FILE", "").strip()
+    if env_file:
+        candidates.append(Path(env_file).expanduser().resolve())
+
+    here = Path(__file__).resolve().parent
+    candidates += [
+        here / "bitdeer.env",
+        Path.cwd() / "bitdeer.env",
+        here.parent / "bitdeer.env",
+        Path("/mnt/data/bitdeer.env"),
+    ]
+
+    for p in candidates:
+        try:
+            if p and p.exists():
+                load_dotenv(p, override=True)
+                log.info(f"[env] Loaded {p}")
+                return
+        except Exception as e:
+            log.warning(f"[env] Failed loading {p}: {e}")
+
+    load_dotenv(override=False)
+    log.info("[env] Loaded default .env or system environment (no bitdeer.env found)")
+
+_load_env_priority()
+
+# Support both canonical and Bitdeer-prefixed keys
+API_URL = (os.getenv("API_URL") or os.getenv("BITDEER_API_URL") or "").strip()
+API_KEY = (os.getenv("API_KEY") or os.getenv("BITDEER_API_KEY") or os.getenv("BEARER_TOKEN") or "").strip()
+MODEL   = (os.getenv("MODEL")   or os.getenv("BITDEER_MODEL")   or "openai/gpt-oss-120b").strip()
+
+_default_dir = Path("/mnt/data") if Path("/mnt/data").exists() else Path(r"C:\Team_Cashew_Synthetic_Data")
+DATA_DIR  = Path(os.getenv("DATA_DIR", str(_default_dir)))
+COMPANY   = (os.getenv("COMPANY_NAME") or "Cashew4Nuts").strip()  # default brand
+
+ASSISTANT_NAME_CUSTOMER = "Nibbles"
+ASSISTANT_NAME_STAFF    = "Clarity"
+
+# -----------------------------
+# Branding sanitizer
+# -----------------------------
+_CAMEL_RE = re.compile(r"camel[\s\u00A0\-]*nuts[’'s]*", re.I)
+def brand_sanitize(s: str) -> str:
+    if not isinstance(s, str): return s
+    return _CAMEL_RE.sub(COMPANY, s)
+
+# -----------------------------
+# Routing helpers
+# -----------------------------
+ANALYTICS_WORDS = (
+    "sale","sales","revenue","net sales","gross","amount",
+    "orders","transactions","sku","inventory",
+    "top","bottom","trend","quarter","q1","q2","q3","q4",
+    "half","h1","h2","by ","vs ","compare","year","month",
+    "purchases","ecommerce"
+)
+YEAR_PAT   = re.compile(r"\b(20\d{2})\b")
+RANGE_PAT  = re.compile(r"\bfrom\s+(20\d{2})\s+(?:to|-|–)\s+(20\d{2})\b", re.I)
+
+GREETINGS = {"hi","hello","hey","hiya","yo","good morning","good afternoon","good evening","morning","afternoon","evening"}
+
+_STOP = set("for with in and or the a an of from to by vs on at".split())
+def _tokens(s: str) -> List[str]:
+    return [w for w in re.findall(r"[A-Za-z0-9]+", (s or "").lower()) if w not in _STOP]
+
+def is_generic_greeting(q: str) -> bool:
+    s = re.sub(r"[^\w\s]", "", (q or "").lower()).strip()
+    return s in GREETINGS or s.startswith("hello")
+
+def looks_like_sku(q: str) -> bool:
+    return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_]{5,}$", (q or "").strip()))
+
+def is_analytics_query(q: str) -> bool:
+    if not q: return False
+    ql = q.lower()
+    if any(w in ql for w in ANALYTICS_WORDS): return True
+    if RANGE_PAT.search(ql): return True
+    if YEAR_PAT.search(ql): return True
+    if "column" in ql or "field" in ql or "schema" in ql or "describe" in ql: return True
+    return False
+
+def is_complex_query(q: str) -> bool:
+    ql = (q or "").lower().strip()
+
+    # Explicit complex intents (guarantee dashboard link for trends etc.)
+    if any(k in ql for k in (
+        "trend", "cohort", "retention", "attribution",
+        "forecast", "segmentation", "seasonality",
+        "correlation", "dashboard"
+    )):
+        return True
+
+    # Year ranges like "from 2022 to 2025"
+    if RANGE_PAT.search(ql):
+        return True
+
+    # Quarter / half references (Q1–Q4, H1/H2) — patterns declared below
+    if any(p.search(ql) for p in Q_PATTERNS.values()) or any(p.search(ql) for p in H_PATTERNS.values()):
+        return True
+
+    # Multi-dimension queries (group-bys, comparisons)
+    if " vs " in ql or ql.count(" by ") >= 1:
+        return True
+
+    # Long/narrative prompts
+    return len(ql) > 100
+
+def make_dashboard_link(query: str, years: Optional[List[int]]=None, period: Optional[str]=None, product: Optional[str]=None) -> str:
+    params = {"id": uuid.uuid4().hex[:8], "q": query}
+    if years:  params["years"]  = ",".join(map(str, sorted(set(years))))
+    if period: params["period"] = period
+    if product:params["product"]= product
+    from urllib.parse import urlencode, quote_plus
+    # Fake link for PoC (served locally to a simple page)
+    return f"http://127.0.0.1:5000/dashboard?{urlencode(params, quote_via=quote_plus)}"
+
+def call_model(messages: List[Dict[str, str]], max_tokens=512) -> str:
+    if not (API_URL and API_KEY):
+        return "API not configured. Please check your bitdeer.env (API_URL, API_KEY, MODEL)."
+    try:
+        sysmsg = {"role":"system","content":"Always answer in plain text only. Do not use Markdown, bold, tables, or special formatting."}
+        r = requests.post(
+            API_URL,
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={"model": MODEL, "messages": [sysmsg]+messages, "max_tokens": max_tokens},
+            timeout=20,
+        )
+        reply = r.json()["choices"][0]["message"]["content"].strip()
+        return re.sub(r"[*_`#>|]", "", reply)
+    except Exception as e:
+        log.error(f"[api] error: {e}")
+        return "Sorry, I couldn’t connect to the assistant API."
+
+# -----------------------------
+# Data Manager (dynamic CSV loader)
+# -----------------------------
+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty: return df
+    df.columns = [str(c).replace("\u00A0"," ").strip().lower() for c in df.columns]
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].astype(str).str.replace("\u00A0"," ", regex=False).str.strip()
+    return df
+
+class DataManager:
+    def __init__(self, data_dir: Path):
+        self.dir = Path(data_dir)
+        self.tables: Dict[str, pd.DataFrame] = {}
+        self._load_all()
+
+    def _safe_csv(self, path: Path) -> pd.DataFrame:
+        na_vals = ["", " ", "None", "none", "NULL", "null", "NaN", "nan", "N/A", "n/a"]
+        for enc in ("utf-8","utf-8-sig","latin-1"):
+            try:
+                return pd.read_csv(path, encoding=enc, low_memory=False, keep_default_na=True, na_values=na_vals)
+            except Exception:
+                continue
+        return pd.DataFrame()
+
+    def _load_all(self):
+        log.info(f"[load] scanning {self.dir} for CSV files…")
+        if not self.dir.exists():
+            log.error(f"[load] directory not found: {self.dir}")
+            return
+        count = 0
+        for p in self.dir.rglob("*.csv"):
+            df = _normalize_df(self._safe_csv(p))
+            key = p.stem.lower().replace(" ","_")
+            self.tables[key] = df
+            count += 1
+            log.info(f"[load] {key}: {len(df)} rows, {len(df.columns)} cols")
+        log.info(f"[load] total CSVs loaded: {count}")
+
+# -----------------------------
+# Column detection helpers
+# -----------------------------
+REV_PAT   = re.compile(r"(net_?sales|gross_?sales|line_?net_?sales|amount|revenue|total_?amount|line_?total|grand_?total|sales)", re.I)
+PROD_PAT  = re.compile(r"(sku_?description|product|product_?name|item_?name|desc|name)", re.I)
+DATE_PAT  = re.compile(r"(order_?date|order_?datetime|purchase_?date|purchased?_?at|date|datetime|timestamp|time|created_?at)", re.I)
+SKU_PAT   = re.compile(r"^(sku|item_?sku|sku_?code|item_?code|product_?code)$", re.I)
+
+def _find_col(df: pd.DataFrame, regex: re.Pattern, priority: Optional[List[str]] = None) -> Optional[str]:
+    if df is None or df.empty: return None
+    if priority:
+        for c in priority:
+            if c in df.columns: return c
+    for c in df.columns:
+        if regex.search(c): return c
+    return None
+
+def _find_sku_col(df: pd.DataFrame) -> Optional[str]:
+    if df is None or df.empty: return None
+    for c in df.columns:
+        if SKU_PAT.match(c): return c
+    return None
+
+# -----------------------------
+# Sales table eligibility & harmonization
+# -----------------------------
+def _is_sales_table(name: str, df: pd.DataFrame) -> bool:
+    """Eligible iff it has a revenue-like column AND (a product-like OR SKU column)."""
+    if df is None or df.empty:
+        return False
+    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount","line_total","grand_total"])
+    prod = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","name","desc"])  # exclude 'category' as product
+    sku  = _find_sku_col(df)
+    return bool(rev and (prod or sku))
+
+def _harmonize_sales_table(name: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Normalize a sales table to columns: revenue, product, sku, date, year, month, source."""
+    if df is None or df.empty:
+        return None
+
+    rev  = _find_col(df, REV_PAT,  ["line_net_sales_sgd","net_sales_sgd","net_sales","revenue","sales_amount","amount","total_amount","line_total","grand_total"])
+    prod = _find_col(df, PROD_PAT, ["sku_description","product_name","item_name","name","desc"])
+    dcol = _find_col(df, DATE_PAT, ["order_datetime","order_date","purchase_date","purchased_at","created_at","date","datetime","timestamp","time"])
+    sku  = _find_sku_col(df)
+
+    # Require revenue AND (product or SKU)
+    if not rev or not (prod or sku):
+        return None
+
+    out = pd.DataFrame()
+    out["revenue"] = pd.to_numeric(df[rev], errors="coerce").fillna(0)
+
+    out["sku"] = df[sku].astype(str) if sku else None
+    out["product"] = df[prod].astype(str) if prod else None
+
+    if dcol:
+        dt = pd.to_datetime(df[dcol], errors="coerce")
+        out["date"]  = dt
+        out["year"]  = dt.dt.year
+        out["month"] = dt.dt.month
+    else:
+        out["date"] = pd.NaT; out["year"] = None; out["month"] = None
+
+    out["source"] = name
+    return out
+
+# -----------------------------
+# Build sales corpus (strict sku_master.sku_description)
+# -----------------------------
+def build_sales_corpus(dm: DataManager) -> pd.DataFrame:
+    parts = []
+    for name, df in dm.tables.items():
+        if _is_sales_table(name, df):
+            h = _harmonize_sales_table(name, df)
+            if h is not None and not h.empty:
+                parts.append(h)
+
+    if not parts:
+        return pd.DataFrame(columns=["revenue","product","sku","date","year","month","source"])
+
+    big = pd.concat(parts, ignore_index=True)
+
+    # Map canonical names strictly from sku_master.sku_description
+    sm = dm.tables.get("sku_master")
+    if isinstance(sm, pd.DataFrame) and not sm.empty:
+        sm = _normalize_df(sm.copy())
+
+        # Find SKU column in sku_master (prefer 'sku', else common variants)
+        sku_col = None
+        for c in ("sku", "sku_code", "item_sku", "item_code", "product_code"):
+            if c in sm.columns:
+                sku_col = c
+                break
+        if not sku_col:
+            sku_col = _find_sku_col(sm)
+
+        if sku_col and "sku_description" in sm.columns:
+            sm_slice = sm[[sku_col, "sku_description"]].drop_duplicates(sku_col)
+            sm_slice.columns = ["sku", "sku_desc"]
+            big = big.merge(sm_slice, on="sku", how="left")
+
+            # Prefer canonical description where product is missing or code-like
+            code_like = big["product"].astype(str).str.match(r"^[A-Za-z0-9\-_]+$", na=False)
+            big["product"] = big["product"].where(big["product"].notna() & ~code_like, big["sku_desc"])
+            big.drop(columns=["sku_desc"], inplace=True, errors="ignore")
+            log.info(f"[sku_master] mapped product names using columns sku='{sku_col}', desc='sku_description'")
+        else:
+            log.warning("[sku_master] Missing required columns: need 'sku' (or variant) AND 'sku_description'")
+
+    # Hard clean product field
+    def _clean_str(x):
+        s = ("" if x is None else str(x)).strip()
+        return (None if s.lower() in ("", "none", "nan", "na", "null") else s)
+
+    big["product"] = big["product"].map(_clean_str)
+
+    # Last fallback: if product still null but SKU exists, use SKU
+    big.loc[big["product"].isna() & big["sku"].notna(), "product"] = big["sku"].astype(str)
+
+    # Drop anything without a resolvable product — prevents “None” from entering groups
+    before = len(big)
+    big = big[big["product"].notna()]
+    dropped = before - len(big)
+    if dropped > 0:
+        log.info(f"[sales] dropped {dropped} rows with unresolved product")
+
+    return big
+
+# -----------------------------
+# Period parsing (used by is_complex_query too)
+# -----------------------------
+Q_PATTERNS = {
+    "q1": re.compile(r"\b(q1|first\s+quarter|quarter\s*1)\b", re.I),
+    "q2": re.compile(r"\b(q2|second\s+quarter|quarter\s*2)\b", re.I),
+    "q3": re.compile(r"\b(q3|third\s+quarter|quarter\s*3)\b", re.I),
+    "q4": re.compile(r"\b(q4|fourth\s+quarter|quarter\s*4)\b", re.I),
+}
+H_PATTERNS = {
+    "h1": re.compile(r"\b(h1|first\s+half|jan(?:uary)?\s*-\s*jun(?:e)?)\b", re.I),
+    "h2": re.compile(r"\b(h2|second\s+half|jul(?:y)?\s*-\s*dec(?:ember)?)\b", re.I),
+}
+
+def parse_years(q: str) -> Tuple[Optional[List[int]], Optional[int], Optional[int]]:
+    ql = q.lower()
+    m = RANGE_PAT.search(ql)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b: a, b = b, a
+        return list(range(a, b+1)), a, b
+    yrs = [int(y) for y in YEAR_PAT.findall(ql)]
+    if not yrs: return None, None, None
+    return yrs, min(yrs), max(yrs)
+
+def parse_period(q: str) -> Tuple[Optional[List[int]], Optional[str]]:
+    for lab, pat in Q_PATTERNS.items():
+        if pat.search(q): return {"q1":[1,2,3], "q2":[4,5,6], "q3":[7,8,9], "q4":[10,11,12]}[lab], lab.upper()
+    for lab, pat in H_PATTERNS.items():
+        if pat.search(q): return {"h1":[1,2,3,4,5,6], "h2":[7,8,9,10,11,12]}[lab], lab.upper()
+    return None, None
+
+def parse_top_bottom(q: str) -> Tuple[Optional[str], int]:
+    m_top = re.search(r"\btop(?:\s+(\d+))?\b", q, re.I)
+    if m_top: return "top", int(m_top.group(1) or 5)
+    m_bot = re.search(r"\bbottom(?:\s+(\d+))?\b", q, re.I)
+    if m_bot: return "bottom", int(m_bot.group(1) or 5)
+    return None, 0
+
+# -----------------------------
+# Product name guess (optional helpers)
+# -----------------------------
+def guess_product(q: str, dm: DataManager, sales: Optional[pd.DataFrame]) -> Optional[str]:
+    candidates: List[str] = []
+    pools: List[List[str]] = []
+
+    sm = dm.tables.get("sku_master")
+    if isinstance(sm, pd.DataFrame) and "sku_description" in sm.columns:
+        sdesc = sm["sku_description"].astype(str).dropna().unique().tolist()
+        candidates += sdesc; pools.append(sdesc)
+
+    if isinstance(sales, pd.DataFrame) and "product" in sales.columns:
+        sprod = sales["product"].astype(str).dropna().unique().tolist()
+        candidates += sprod; pools.append(sprod)
+
+    if not candidates: return None
+
+    best, best_score = None, 0
+    for cand in candidates:
+        s = fuzz.token_set_ratio(q, cand)
+        if s > best_score:
+            best, best_score = cand, s
+    if best_score >= 70:
+        return best
+
+    qtok = set(_tokens(q))
+    best2, hits2 = None, 0
+    for pool in pools:
+        for cand in pool:
+            ctok = set(_tokens(cand))
+            hits = len(qtok & ctok)
+            if hits > hits2 and hits >= 2:
+                best2, hits2 = cand, hits
+    return best2
+
+# -----------------------------
+# Customer tools (FAQ only here)
+# -----------------------------
+class CustomerTools:
+    def __init__(self, dm: DataManager):
+        self.dm = dm
+
+    def faq_lookup(self, q: str) -> str:
+        faq = self.dm.tables.get("faqs") or self.dm.tables.get("faq") or pd.DataFrame()
+        faq = _normalize_df(faq.copy()) if not faq.empty else faq
+        if faq.empty or not {"question","answer"} <= set(faq.columns):
+            return ""
+        best, score = None, 0
+        for _, row in faq.iterrows():
+            s = fuzz.token_set_ratio(str(row["question"]), q)
+            if s > score:
+                best, score = str(row["answer"]), s
+        return best if score >= 75 else ""
+
+# -----------------------------
+# Analytics tools (Clarity)
+# -----------------------------
+class AnalyticsTools:
+    def __init__(self, dm: DataManager):
+        self.dm = dm
+        self.sales = build_sales_corpus(dm)
+        log.info(f"[sales] combined corpus shape: {self.sales.shape}")
+
+    def _scoped(self, df: pd.DataFrame, years: Optional[List[int]], months: Optional[List[int]]) -> pd.DataFrame:
+        if df is None or df.empty: return df
+        if years:  df = df[df["year"].isin(years)]
+        if months: df = df[df["month"].isin(months)]
+        return df
+
+    def total(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
+        years, y_min, y_max = parse_years(q)
+        months, period = parse_period(q)
+        scope = self._scoped(self.sales, years, months)
+        if scope.empty:
+            label = (period or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
+            return (f"No rows found for{label or ' specified period'}.", years or [], period, None)
+        total = scope["revenue"].sum()
+        suffix=[]
+        if period: suffix.append(period)
+        if years:  suffix.append(str(y_min) if y_min==y_max else f"{y_min}-{y_max}")
+        tail = f" ({', '.join(suffix)})" if suffix else ""
+        return (f"Total revenue{tail}: ${total:,.2f}", years or [], period, None)
+
+    def top_bottom(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
+        intent, n = parse_top_bottom(q)
+        if not intent:
+            return None
+        years, y_min, y_max = parse_years(q)
+        months, period = parse_period(q)
+
+        scope = self._scoped(self.sales, years, months)
+        # Ensure product present & non-empty
+        scope = scope[scope["product"].notna() & (scope["product"].astype(str).str.strip() != "")]
+        if scope.empty:
+            label = (period or "") + (f" {y_min}" if y_min and y_min==y_max else (f" {y_min}-{y_max}" if y_min else ""))
+            return (f"No rows found for{label or ' specified period'}.", years or [], period, None)
+
+        agg = scope.groupby("product")["revenue"].sum().sort_values(ascending=False)
+        sel = agg.head(n) if intent == "top" else agg.tail(n)
+        title = f"{intent.capitalize()} {n} products by revenue"
+        parts = []
+        if period: parts.append(period)
+        if years:  parts.append(str(y_min) if y_min==y_max else f"{y_min}-{y_max}")
+        tail = f" ({', '.join(parts)})" if parts else ""
+        lines = [f"{title}{tail}:"] + [f"- {p}: ${v:,.2f}" for p, v in sel.items()]
+        return ("\n".join(lines), years or [], period, None)
+
+    def trend(self, q: str) -> Optional[Tuple[str, List[int], Optional[str], Optional[str]]]:
+        ql = q.lower()
+        if "trend" not in ql and not RANGE_PAT.search(ql): return None
+        years, y_min, y_max = parse_years(q)
+        if not years: return None
+
+        prod = guess_product(q, dm=self.dm, sales=self.sales)
+        scope = self.sales.copy()
+        if prod:
+            scope = scope[scope["product"].astype(str).str.contains(re.escape(prod), case=False, na=False)]
+
+        scope = self._scoped(scope, years, None)
+        if scope.empty:
+            label = f" '{prod}'" if prod else ""
+            return (f"No rows found for{label} {y_min}-{y_max}.", years or [], None, prod)
+
+        yearly = scope.groupby("year", dropna=False)["revenue"].sum().sort_index()
+        head = f"Revenue trend for {prod} ({y_min}-{y_max}):" if prod else f"Revenue trend ({y_min}-{y_max}):"
+        lines = [head] + [f"- {int(y)}: ${v:,.2f}" for y, v in yearly.items()]
+        return ("\n".join(lines), years or [], None, prod)
+
+    # Schema/column description
+    def describe_column(self, q: str) -> Optional[str]:
+        m = re.search(r"(?:what\s+is|explain|describe)\s+(?:the\s+)?column\s+([a-z0-9_]+)(?:\s+in\s+([a-z0-9_\-\.]+))?", q, re.I)
+        if not m:
+            m = re.search(r"(?:what\s+is|explain|describe)\s+([a-z0-9_]+)\s+column(?:\s+in\s+([a-z0-9_\-\.]+))?", q, re.I)
+        if not m: return None
+        col = m.group(1).lower()
+        table_hint = (m.group(2) or "").lower().replace(".csv","").strip()
+
+        pairs = []
+        for name, df in self.dm.tables.items():
+            if not isinstance(df, pd.DataFrame) or df.empty: continue
+            if col in df.columns or any(col == c.lower() for c in df.columns):
+                score = 2 if table_hint and table_hint in name else 1
+                pairs.append((score, name, df))
+        if not pairs:
+            return f"I couldn’t find a column named '{col}'."
+
+        pairs.sort(reverse=True, key=lambda x: x[0])
+        name, df = pairs[0][1], _normalize_df(pairs[0][2].copy())
+
+        if col not in df.columns:
+            col = next((c for c in df.columns if c.lower()==col), col)
+        s = df[col]
+        dtype = str(s.dtype)
+        non_null = int(s.notna().sum())
+        total = int(len(s))
+
+        out = [f"Column '{col}' in '{name}':", f"- dtype: {dtype}", f"- non-null: {non_null}/{total}"]
+        if pd.api.types.is_numeric_dtype(s):
+            sn = pd.to_numeric(s, errors="coerce")
+            out += [f"- min: {sn.min():,.2f}", f"- max: {sn.max():,.2f}", f"- mean: {sn.mean():,.2f}"]
+        else:
+            samples = s.dropna().astype(str).unique().tolist()[:5]
+            if samples: out += ["- examples: " + ", ".join(samples)]
+        return "\n".join(out)
+
+# -----------------------------
+# Unified Assistant (auto persona)
+# -----------------------------
+class Assistant:
+    def __init__(self, dm: DataManager):
+        self.dm = dm
+        self.cust = CustomerTools(dm)
+        self.ana  = AnalyticsTools(dm)
+
+    def answer(self, q: str) -> Tuple[str, str]:
+        q = (q or "").strip()
+        if not q:
+            return "Say something!", ASSISTANT_NAME_CUSTOMER
+
+        if is_generic_greeting(q):
+            return "Hi! How can I help today?", ASSISTANT_NAME_CUSTOMER
+
+        if is_analytics_query(q):
+            desc = self.ana.describe_column(q)
+            if desc:
+                if is_complex_query(q):
+                    desc += f"\n\nOpen dashboard: {make_dashboard_link(q)}"
+                return desc, ASSISTANT_NAME_STAFF
+
+            for handler in (self.ana.trend, self.ana.top_bottom, self.ana.total):
+                res = handler(q)
+                if res:
+                    text, years, period, product = res
+                    if is_complex_query(q):
+                        text += f"\n\nOpen dashboard: {make_dashboard_link(q, years=years, period=period, product=product)}"
+                    return text, ASSISTANT_NAME_STAFF
+
+            # Fallback to LLM for other analytics questions
+            text = call_model([
+                {"role":"system","content":(
+                    f"You are Clarity, an internal analytics officer at {COMPANY}. "
+                    "Use concise, plain text answers. If data specifics are missing, say which file/field you need."
+                )},
+                {"role":"user","content": q},
+            ])
+            if is_complex_query(q):
+                text += f"\n\nOpen dashboard: {make_dashboard_link(q)}"
+            return text, ASSISTANT_NAME_STAFF
+
+        # Nibbles mode: FAQ fallback; catalogue suppressed to avoid noise
+        faq = self.cust.faq_lookup(q)
+        if faq:
+            return faq, ASSISTANT_NAME_CUSTOMER
+
+        text = call_model([
+            {"role":"system","content":(
+                f"You are Nibbles, a warm and professional Customer Service Officer at {COMPANY}. "
+                "Keep replies short and friendly. Never mention that you are an AI."
+            )},
+            {"role":"user","content": q},
+        ])
+        return text, ASSISTANT_NAME_CUSTOMER
+
+# -----------------------------
+# Flask app + Cerulean UI (simple header)
+# -----------------------------
+app = Flask(__name__)
+dm  = DataManager(DATA_DIR)
+bot = Assistant(dm)
+
+INDEX_HTML_TPL = Template("""
+<!doctype html>
+<html>
+<head>
+  <title>Clarity</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+  :root{ --cerulean:#2a9df4; --cerulean-dark:#1b6fa8; --bg:#f4f9ff; }
+  *{box-sizing:border-box}
+  body{background:var(--bg);font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0}
+  .container{max-width:760px;margin:0 auto;padding:20px}
+  .widget{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);overflow:hidden}
+  .header{background:linear-gradient(135deg,var(--cerulean),#9fd3ff);color:#0f2840;padding:22px 20px;text-align:center}
+  .header h1{margin:0;font-size:22px;letter-spacing:.2px}
+  .chat{height:520px;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;background:#f7fbff}
+  .bubble{padding:12px 14px;border-radius:16px;max-width:85%;line-height:1.4;white-space:pre-wrap;position:relative}
+  .user{align-self:flex-end;background:var(--cerulean);color:#ffffff}
+  .bot{align-self:flex-start;background:#ffffff;color:#1e2a36;border:1px solid #e6f0fb}
+  .badge{font-size:11px;font-weight:600;opacity:.85;margin-bottom:4px}
+  .composer{display:flex;padding:14px;border-top:1px solid #e6f0fb;background:#fff}
+  .input-wrap{flex:1;position:relative}
+  textarea{width:100%;border-radius:24px;padding:12px 88px 12px 14px;border:2px solid #e6f0fb;resize:none;font-family:inherit;font-size:14px;outline:none}
+  textarea:focus{border-color:var(--cerulean)}
+  button{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--cerulean);color:#ffffff;border:none;padding:8px 16px;border-radius:18px;cursor:pointer;font-size:14px}
+  button:hover{background:var(--cerulean-dark)}
+  .typing{color:#516579;font-style:italic;align-self:flex-start}
+  a{color:#1b6fa8}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="widget">
+      <div class="header"><h1>Clarity</h1></div>
+      <div id="chat" class="chat">
+        <div class="bubble bot">
+          <div class="badge">${STAFF} / ${CUSTOMER}</div>
+Hello! Ask me anything.
+• Sales/Data examples: "Sales trend for roasted peanuts from 2022 to 2025", "Top 5 products by revenue in 2024", "Total revenue H1 2023".
+• Customer help: "Allergen info for peanuts".
+        </div>
+      </div>
+      <div class="composer">
+        <div class="input-wrap">
+          <textarea id="msg" rows="1" placeholder="Type your message…" onkeydown="handleEnter(event)"></textarea>
+          <button onclick="sendMsg()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+function handleEnter(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); } }
+function autoResize(el){ el.style.height='auto'; el.style.height=el.scrollHeight + 'px'; }
+document.getElementById('msg').addEventListener('input', function(){ autoResize(this); });
+
+function escapeHtml(str){
+  return str.replace(/[&<>'"]/g, function(tag){
+    const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
+    return chars[tag] || tag;
+  });
+}
+function linkify(el){
+  el.innerHTML = el.innerHTML.replace(/(https?:\\/\\/[^\\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+
+async function sendMsg(){
+  const box=document.getElementById('msg');
+  const text=box.value.trim();
+  if(!text) return;
+  const chat=document.getElementById('chat');
+  chat.insertAdjacentHTML('beforeend','<div class="bubble user">'+escapeHtml(text)+'</div>');
+  box.value=''; autoResize(box); chat.scrollTop=chat.scrollHeight;
+
+  const typing=document.createElement('div');
+  typing.className='typing'; typing.innerText='Assistant is typing…';
+  chat.appendChild(typing); chat.scrollTop=chat.scrollHeight;
+
+  let resp = await fetch('/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message:text})});
+  let data = await resp.json();
+  chat.removeChild(typing);
+
+  const speaker = escapeHtml(data.speaker || '${STAFF}');
+  const reply   = escapeHtml(data.reply || '');
+  const html = '<div class="bubble bot"><div class="badge">'+speaker+'</div>'+reply+'</div>';
+  chat.insertAdjacentHTML('beforeend', html);
+  const bubbles = chat.getElementsByClassName('bubble');
+  linkify(bubbles[bubbles.length-1]);
+  chat.scrollTop=chat.scrollHeight;
+}
+</script>
+</body>
+</html>
+""")
+
+@app.route("/")
+def index():
+    return render_template_string(INDEX_HTML_TPL.safe_substitute(
+        STAFF=ASSISTANT_NAME_STAFF,
+        CUSTOMER=ASSISTANT_NAME_CUSTOMER
+    ))
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    msg = (request.json.get("message") or "").strip()
+    if not msg:
+        return jsonify({"reply": "Say something!", "speaker": ASSISTANT_NAME_CUSTOMER})
+    reply, persona = bot.answer(msg)
+    # Mask any accidental brand leakage before returning
+    reply = brand_sanitize(reply)
+    persona = brand_sanitize(persona)
+    return jsonify({"reply": reply, "speaker": persona})
+
+@app.route("/dashboard")
+def dashboard():
+    from flask import request as _rq
+    q      = _rq.args.get("q","")
+    years  = _rq.args.get("years","")
+    period = _rq.args.get("period","")
+    prod   = _rq.args.get("product","")
+    tok    = _rq.args.get("id","")
+    html = f"""<!doctype html><html><head><meta charset='utf-8'><title>Clarity Dashboard (PoC)</title>
+    <style>body{{font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f4f9ff;margin:0;padding:24px;color:#0f2840}}
+    .card{{background:#fff;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);padding:20px;max-width:960px;margin:0 auto}}
+    .pill{{display:inline-block;background:#e6f0fb;color:#1b6fa8;border-radius:999px;padding:6px 10px;margin:4px 6px 0 0;font-size:13px}}</style></head>
+    <body><div class="card"><h2>Clarity Dashboard (PoC)</h2>
+    <div><b>Request ID:</b> {tok or '(auto)'} </div>
+    <div><b>Query:</b> {brand_sanitize(q) or '(none)'} </div>
+    <div>{"".join(f"<span class='pill'>Year: {y}</span>" for y in years.split(",") if y)}</div>
+    <div>{("<span class='pill'>Period: "+period+"</span>" if period else "")}{(" <span class='pill'>Product: "+brand_sanitize(prod)+"</span>" if prod else "")}</div>
+    <p style="color:#51708d">This is a placeholder for demo links. No charts are rendered.</p></div></body></html>"""
+    return html
+
+if __name__ == "__main__":
+    print(f"🚀 Clarity running at http://127.0.0.1:5000/  (DATA_DIR={DATA_DIR}, COMPANY={COMPANY})")
+    app.run(host="127.0.0.1", port=5000)
