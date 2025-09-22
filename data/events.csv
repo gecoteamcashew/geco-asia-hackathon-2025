@@ -1,0 +1,141 @@
+event_id,campaign_id,event_name,event_type,start_date,end_date,marketing_spend_sgd,attributed_sales_sgd
+EVT00001,CAM0001,Supermarket Sampling — CNY 2019,Supermarket Sampling,2019-01-18,2019-01-24,1654.69,308.23
+EVT00002,CAM0001,Lazada Mega Day — CNY 2019,Lazada Mega Day,2019-02-08,2019-02-15,4831.08,172.97
+EVT00003,CAM0001,TikTok Spark Ads — CNY 2019,TikTok Spark Ads,2019-01-27,2019-02-15,1926.3,2735.12
+EVT00004,CAM0002,Meta Retargeting — Ramadan 2019,Meta Retargeting,2019-03-21,2019-03-29,4771.55,847.75
+EVT00005,CAM0002,Lazada Mega Day — Ramadan 2019,Lazada Mega Day,2019-03-14,2019-03-26,5556.66,202.69
+EVT00006,CAM0002,Corporate Gifting Push — Ramadan 2019,Corporate Gifting Push,2019-03-13,2019-04-01,1618.12,717.76
+EVT00007,CAM0002,Supermarket Sampling — Ramadan 2019,Supermarket Sampling,2019-04-10,2019-04-20,5942.68,348.68
+EVT00008,CAM0003,Lazada Mega Day — Mid‑Autumn 2019,Lazada Mega Day,2019-08-20,2019-08-30,3752.96,362.57
+EVT00009,CAM0003,Meta Retargeting — Mid‑Autumn 2019,Meta Retargeting,2019-08-24,2019-09-10,4181.04,1365.34
+EVT00010,CAM0004,Meta Retargeting — 11.11 Mega 2019,Meta Retargeting,2019-11-22,2019-11-30,8686.5,876.03
+EVT00011,CAM0004,Supermarket Sampling — 11.11 Mega 2019,Supermarket Sampling,2019-11-20,2019-11-29,4407.29,464.21
+EVT00012,CAM0004,Supermarket Sampling — 11.11 Mega 2019,Supermarket Sampling,2019-11-04,2019-11-24,7982.3,1388.72
+EVT00013,CAM0005,Meta Retargeting — Xmas 2019,Meta Retargeting,2019-12-01,2019-12-11,2297.84,728.55
+EVT00014,CAM0005,Meta Retargeting — Xmas 2019,Meta Retargeting,2019-12-03,2019-12-18,4423.06,1260.19
+EVT00015,CAM0006,Supermarket Sampling — Back‑to‑School 2019,Supermarket Sampling,2019-07-22,2019-07-31,4386.46,468.92
+EVT00016,CAM0006,Supermarket Sampling — Back‑to‑School 2019,Supermarket Sampling,2019-07-01,2019-07-15,1353.74,744.81
+EVT00017,CAM0006,Website Promo — Back‑to‑School 2019,Website Promo,2019-07-10,2019-07-30,4687.61,227.15
+EVT00018,CAM0007,Website Promo — National Day 2019,Website Promo,2019-08-06,2019-08-15,4178.4,172.84
+EVT00019,CAM0007,Corporate Gifting Push — National Day 2019,Corporate Gifting Push,2019-08-04,2019-08-09,4916.18,69.44
+EVT00020,CAM0007,Website Promo — National Day 2019,Website Promo,2019-08-01,2019-08-08,2459.86,213.1
+EVT00021,CAM0008,Meta Retargeting — CNY 2020,Meta Retargeting,2020-01-23,2020-01-29,1846.6,782.35
+EVT00022,CAM0008,TikTok Spark Ads — CNY 2020,TikTok Spark Ads,2020-01-27,2020-02-13,1650.67,1675.67
+EVT00023,CAM0008,Corporate Gifting Push — CNY 2020,Corporate Gifting Push,2020-01-23,2020-01-29,2633.96,141.81
+EVT00024,CAM0008,Shopee Flash Sale — CNY 2020,Shopee Flash Sale,2020-01-26,2020-02-10,2354.94,737.4
+EVT00025,CAM0009,TikTok Spark Ads — Ramadan 2020,TikTok Spark Ads,2020-04-08,2020-04-17,4365.26,1737.64
+EVT00026,CAM0009,Shopee Flash Sale — Ramadan 2020,Shopee Flash Sale,2020-03-16,2020-04-02,4625.68,321.1
+EVT00027,CAM0009,Shopee Flash Sale — Ramadan 2020,Shopee Flash Sale,2020-03-30,2020-04-17,2486.83,514.67
+EVT00028,CAM0010,Corporate Gifting Push — Mid‑Autumn 2020,Corporate Gifting Push,2020-09-12,2020-09-20,3195.7,143.43
+EVT00029,CAM0010,Corporate Gifting Push — Mid‑Autumn 2020,Corporate Gifting Push,2020-09-01,2020-09-08,3384.46,272.35
+EVT00030,CAM0011,Website Promo — 11.11 Mega 2020,Website Promo,2020-11-08,2020-11-16,5480.07,220.06
+EVT00031,CAM0011,Meta Retargeting — 11.11 Mega 2020,Meta Retargeting,2020-11-05,2020-11-18,5015.73,2139.93
+EVT00032,CAM0011,Meta Retargeting — 11.11 Mega 2020,Meta Retargeting,2020-11-19,2020-11-30,4522.91,1559.92
+EVT00033,CAM0011,TikTok Spark Ads — 11.11 Mega 2020,TikTok Spark Ads,2020-11-11,2020-11-16,2405.74,584.9
+EVT00034,CAM0012,Supermarket Sampling — Xmas 2020,Supermarket Sampling,2020-12-03,2020-12-18,5463.8,1053.4
+EVT00035,CAM0012,Website Promo — Xmas 2020,Website Promo,2020-12-01,2020-12-11,4163.73,159.62
+EVT00036,CAM0012,Website Promo — Xmas 2020,Website Promo,2020-12-04,2020-12-09,1916.33,161.19
+EVT00037,CAM0013,Lazada Mega Day — Back‑to‑School 2020,Lazada Mega Day,2020-07-22,2020-07-31,5550.53,207.15
+EVT00038,CAM0013,Website Promo — Back‑to‑School 2020,Website Promo,2020-07-12,2020-07-18,4152.19,201.73
+EVT00039,CAM0014,Website Promo — National Day 2020,Website Promo,2020-08-07,2020-08-15,2263.55,93.23
+EVT00040,CAM0014,Shopee Flash Sale — National Day 2020,Shopee Flash Sale,2020-08-02,2020-08-08,4893.2,242.73
+EVT00041,CAM0014,Shopee Flash Sale — National Day 2020,Shopee Flash Sale,2020-08-02,2020-08-15,4885.88,774.08
+EVT00042,CAM0015,Supermarket Sampling — CNY 2021,Supermarket Sampling,2021-01-11,2021-01-19,2986.12,808.83
+EVT00043,CAM0015,Shopee Flash Sale — CNY 2021,Shopee Flash Sale,2021-01-20,2021-02-07,2859.5,647.07
+EVT00044,CAM0016,Shopee Flash Sale — Ramadan 2021,Shopee Flash Sale,2021-04-08,2021-04-20,3299.33,377.53
+EVT00045,CAM0016,Corporate Gifting Push — Ramadan 2021,Corporate Gifting Push,2021-03-14,2021-03-24,3118.89,358.76
+EVT00046,CAM0016,Corporate Gifting Push — Ramadan 2021,Corporate Gifting Push,2021-03-20,2021-04-05,4634.78,576.52
+EVT00047,CAM0017,Meta Retargeting — Mid‑Autumn 2021,Meta Retargeting,2021-08-19,2021-08-29,3471.75,1065.98
+EVT00048,CAM0017,Lazada Mega Day — Mid‑Autumn 2021,Lazada Mega Day,2021-08-26,2021-09-08,6284.19,248.12
+EVT00049,CAM0018,Supermarket Sampling — 11.11 Mega 2021,Supermarket Sampling,2021-11-01,2021-11-17,4854.63,563.11
+EVT00050,CAM0018,TikTok Spark Ads — 11.11 Mega 2021,TikTok Spark Ads,2021-11-03,2021-11-12,5589.33,1163.3
+EVT00051,CAM0019,Website Promo — Xmas 2021,Website Promo,2021-12-11,2021-12-17,2211.12,178.64
+EVT00052,CAM0019,Supermarket Sampling — Xmas 2021,Supermarket Sampling,2021-12-07,2021-12-14,5393.67,271.06
+EVT00053,CAM0020,TikTok Spark Ads — Back‑to‑School 2021,TikTok Spark Ads,2021-06-16,2021-07-03,2483.57,1178.33
+EVT00054,CAM0020,Corporate Gifting Push — Back‑to‑School 2021,Corporate Gifting Push,2021-07-15,2021-07-31,3358.18,71.91
+EVT00055,CAM0021,Website Promo — National Day 2021,Website Promo,2021-08-06,2021-08-15,5719.67,114.45
+EVT00056,CAM0021,Lazada Mega Day — National Day 2021,Lazada Mega Day,2021-08-05,2021-08-15,1792.6,296.7
+EVT00057,CAM0022,TikTok Spark Ads — CNY 2022,TikTok Spark Ads,2022-01-31,2022-02-15,3592.8,1865.99
+EVT00058,CAM0022,Lazada Mega Day — CNY 2022,Lazada Mega Day,2022-01-16,2022-02-05,1599.25,863.26
+EVT00059,CAM0022,TikTok Spark Ads — CNY 2022,TikTok Spark Ads,2022-02-04,2022-02-15,5174.34,1297.64
+EVT00060,CAM0022,Shopee Flash Sale — CNY 2022,Shopee Flash Sale,2022-01-20,2022-02-08,5928.45,1054.12
+EVT00061,CAM0023,Supermarket Sampling — Ramadan 2022,Supermarket Sampling,2022-03-30,2022-04-17,2525.48,490.91
+EVT00062,CAM0023,TikTok Spark Ads — Ramadan 2022,TikTok Spark Ads,2022-03-29,2022-04-03,1093.21,694.26
+EVT00063,CAM0023,Corporate Gifting Push — Ramadan 2022,Corporate Gifting Push,2022-04-09,2022-04-20,3873.23,430.2
+EVT00064,CAM0023,Supermarket Sampling — Ramadan 2022,Supermarket Sampling,2022-04-07,2022-04-20,4939.01,669.18
+EVT00065,CAM0024,Website Promo — Mid‑Autumn 2022,Website Promo,2022-09-06,2022-09-20,1792.21,380.55
+EVT00066,CAM0024,Supermarket Sampling — Mid‑Autumn 2022,Supermarket Sampling,2022-08-17,2022-09-03,4922.48,1151.77
+EVT00067,CAM0025,Meta Retargeting — 11.11 Mega 2022,Meta Retargeting,2022-11-08,2022-11-22,3309.31,2266.36
+EVT00068,CAM0025,Supermarket Sampling — 11.11 Mega 2022,Supermarket Sampling,2022-11-10,2022-11-27,6867.49,1171.52
+EVT00069,CAM0025,Supermarket Sampling — 11.11 Mega 2022,Supermarket Sampling,2022-11-04,2022-11-12,7488.92,254.26
+EVT00070,CAM0026,Lazada Mega Day — Xmas 2022,Lazada Mega Day,2022-12-08,2022-12-14,7297.66,184.28
+EVT00071,CAM0026,Corporate Gifting Push — Xmas 2022,Corporate Gifting Push,2022-12-17,2022-12-26,5194.69,272.01
+EVT00072,CAM0027,Shopee Flash Sale — Back‑to‑School 2022,Shopee Flash Sale,2022-06-28,2022-07-08,1467.73,249.12
+EVT00073,CAM0027,TikTok Spark Ads — Back‑to‑School 2022,TikTok Spark Ads,2022-07-16,2022-07-25,5226,451.17
+EVT00074,CAM0028,Supermarket Sampling — National Day 2022,Supermarket Sampling,2022-08-03,2022-08-13,5668.53,980.52
+EVT00075,CAM0028,Website Promo — National Day 2022,Website Promo,2022-08-06,2022-08-15,3562.12,279.9
+EVT00076,CAM0028,Meta Retargeting — National Day 2022,Meta Retargeting,2022-08-02,2022-08-15,5826.28,1335.84
+EVT00077,CAM0029,Meta Retargeting — CNY 2023,Meta Retargeting,2023-01-18,2023-01-24,5884.07,561.89
+EVT00078,CAM0029,Corporate Gifting Push — CNY 2023,Corporate Gifting Push,2023-01-11,2023-01-31,2791.7,820.31
+EVT00079,CAM0029,Meta Retargeting — CNY 2023,Meta Retargeting,2023-01-28,2023-02-05,2355.97,1064.04
+EVT00080,CAM0029,Website Promo — CNY 2023,Website Promo,2023-01-08,2023-01-24,4040.63,703.96
+EVT00081,CAM0030,Corporate Gifting Push — Ramadan 2023,Corporate Gifting Push,2023-04-06,2023-04-20,5453.54,565.23
+EVT00082,CAM0030,Website Promo — Ramadan 2023,Website Promo,2023-03-13,2023-03-21,5516.4,167.75
+EVT00083,CAM0030,Website Promo — Ramadan 2023,Website Promo,2023-03-25,2023-04-02,1901.65,175.89
+EVT00084,CAM0031,Lazada Mega Day — Mid‑Autumn 2023,Lazada Mega Day,2023-08-18,2023-09-01,5199.43,415.74
+EVT00085,CAM0031,TikTok Spark Ads — Mid‑Autumn 2023,TikTok Spark Ads,2023-09-02,2023-09-12,875.02,685.23
+EVT00086,CAM0031,Supermarket Sampling — Mid‑Autumn 2023,Supermarket Sampling,2023-08-24,2023-09-07,1855.26,409.33
+EVT00087,CAM0031,Lazada Mega Day — Mid‑Autumn 2023,Lazada Mega Day,2023-09-01,2023-09-16,1908.44,326.94
+EVT00088,CAM0032,Meta Retargeting — 11.11 Mega 2023,Meta Retargeting,2023-11-04,2023-11-24,8111.46,2306.56
+EVT00089,CAM0032,Shopee Flash Sale — 11.11 Mega 2023,Shopee Flash Sale,2023-11-23,2023-11-30,4781.12,695.17
+EVT00090,CAM0033,Corporate Gifting Push — Xmas 2023,Corporate Gifting Push,2023-12-16,2023-12-25,3240.07,161.59
+EVT00091,CAM0033,Lazada Mega Day — Xmas 2023,Lazada Mega Day,2023-12-07,2023-12-19,7445.3,361.22
+EVT00092,CAM0033,Website Promo — Xmas 2023,Website Promo,2023-12-11,2023-12-29,3146.27,463.34
+EVT00093,CAM0034,Shopee Flash Sale — Back‑to‑School 2023,Shopee Flash Sale,2023-07-04,2023-07-21,1432.11,525.12
+EVT00094,CAM0034,Website Promo — Back‑to‑School 2023,Website Promo,2023-06-24,2023-07-07,1760.09,212.4
+EVT00095,CAM0034,TikTok Spark Ads — Back‑to‑School 2023,TikTok Spark Ads,2023-07-22,2023-07-31,3826.11,1397.4
+EVT00096,CAM0034,Corporate Gifting Push — Back‑to‑School 2023,Corporate Gifting Push,2023-06-29,2023-07-11,3990.6,218.25
+EVT00097,CAM0035,Shopee Flash Sale — National Day 2023,Shopee Flash Sale,2023-08-07,2023-08-15,3263.01,151.62
+EVT00098,CAM0035,Corporate Gifting Push — National Day 2023,Corporate Gifting Push,2023-08-03,2023-08-15,854.7,213.64
+EVT00099,CAM0036,TikTok Spark Ads — CNY 2024,TikTok Spark Ads,2024-01-17,2024-01-24,2755.3,630.41
+EVT00100,CAM0036,Shopee Flash Sale — CNY 2024,Shopee Flash Sale,2024-02-04,2024-02-15,3129.32,301.58
+EVT00101,CAM0037,Meta Retargeting — Ramadan 2024,Meta Retargeting,2024-04-12,2024-04-20,4630.63,918.38
+EVT00102,CAM0037,TikTok Spark Ads — Ramadan 2024,TikTok Spark Ads,2024-04-01,2024-04-09,1866.48,1182.33
+EVT00103,CAM0037,Supermarket Sampling — Ramadan 2024,Supermarket Sampling,2024-03-30,2024-04-13,4473.86,465.14
+EVT00104,CAM0037,Lazada Mega Day — Ramadan 2024,Lazada Mega Day,2024-04-01,2024-04-10,5253,204.54
+EVT00105,CAM0038,TikTok Spark Ads — Mid‑Autumn 2024,TikTok Spark Ads,2024-09-13,2024-09-20,2087.77,492.43
+EVT00106,CAM0038,Corporate Gifting Push — Mid‑Autumn 2024,Corporate Gifting Push,2024-09-09,2024-09-20,3689.54,269.87
+EVT00107,CAM0038,Shopee Flash Sale — Mid‑Autumn 2024,Shopee Flash Sale,2024-08-16,2024-08-23,5852.51,179.71
+EVT00108,CAM0039,Corporate Gifting Push — 11.11 Mega 2024,Corporate Gifting Push,2024-11-13,2024-11-23,5787.69,458.33
+EVT00109,CAM0039,TikTok Spark Ads — 11.11 Mega 2024,TikTok Spark Ads,2024-11-15,2024-11-30,8620.81,2484.15
+EVT00110,CAM0039,Meta Retargeting — 11.11 Mega 2024,Meta Retargeting,2024-11-20,2024-11-30,1896.63,830.84
+EVT00111,CAM0040,Meta Retargeting — Xmas 2024,Meta Retargeting,2024-12-18,2024-12-31,4970.98,1470.57
+EVT00112,CAM0040,Lazada Mega Day — Xmas 2024,Lazada Mega Day,2024-12-21,2024-12-31,8869.14,385.49
+EVT00113,CAM0040,Website Promo — Xmas 2024,Website Promo,2024-12-15,2024-12-30,5675.3,551.06
+EVT00114,CAM0040,Website Promo — Xmas 2024,Website Promo,2024-12-11,2024-12-27,5445.83,309.43
+EVT00115,CAM0041,Corporate Gifting Push — Back‑to‑School 2024,Corporate Gifting Push,2024-06-27,2024-07-10,2232.55,368.26
+EVT00116,CAM0041,Meta Retargeting — Back‑to‑School 2024,Meta Retargeting,2024-06-28,2024-07-15,1460.25,1453.96
+EVT00117,CAM0041,Website Promo — Back‑to‑School 2024,Website Promo,2024-07-23,2024-07-31,2268.17,199.28
+EVT00118,CAM0041,Corporate Gifting Push — Back‑to‑School 2024,Corporate Gifting Push,2024-07-01,2024-07-21,5122.7,247.27
+EVT00119,CAM0042,Corporate Gifting Push — National Day 2024,Corporate Gifting Push,2024-08-08,2024-08-13,1672.28,190.5
+EVT00120,CAM0042,Lazada Mega Day — National Day 2024,Lazada Mega Day,2024-08-07,2024-08-15,6363.34,237.73
+EVT00121,CAM0042,Corporate Gifting Push — National Day 2024,Corporate Gifting Push,2024-08-02,2024-08-15,5299.45,262.32
+EVT00122,CAM0042,Meta Retargeting — National Day 2024,Meta Retargeting,2024-08-06,2024-08-15,1870.81,839.64
+EVT00123,CAM0043,Supermarket Sampling — CNY 2025,Supermarket Sampling,2025-01-15,2025-01-31,4374.82,904.46
+EVT00124,CAM0043,Meta Retargeting — CNY 2025,Meta Retargeting,2025-01-29,2025-02-14,892.84,1404.4
+EVT00125,CAM0043,Website Promo — CNY 2025,Website Promo,2025-01-27,2025-02-05,5476.97,110.36
+EVT00126,CAM0043,Meta Retargeting — CNY 2025,Meta Retargeting,2025-01-18,2025-01-24,3550.34,1088.09
+EVT00127,CAM0044,TikTok Spark Ads — Ramadan 2025,TikTok Spark Ads,2025-03-12,2025-03-24,3643.77,1212
+EVT00128,CAM0044,Meta Retargeting — Ramadan 2025,Meta Retargeting,2025-03-17,2025-03-22,5433.77,423.83
+EVT00129,CAM0045,TikTok Spark Ads — Mid‑Autumn 2025,TikTok Spark Ads,2025-08-20,2025-09-07,4694.13,1636.52
+EVT00130,CAM0045,Shopee Flash Sale — Mid‑Autumn 2025,Shopee Flash Sale,2025-08-15,2025-08-22,1961.93,136.3
+EVT00131,CAM0046,Corporate Gifting Push — 11.11 Mega 2025,Corporate Gifting Push,2025-11-15,2025-11-24,6718.58,0
+EVT00132,CAM0046,Meta Retargeting — 11.11 Mega 2025,Meta Retargeting,2025-11-20,2025-11-30,6289.08,0
+EVT00133,CAM0047,Meta Retargeting — Xmas 2025,Meta Retargeting,2025-12-09,2025-12-26,1639.73,0
+EVT00134,CAM0047,Meta Retargeting — Xmas 2025,Meta Retargeting,2025-12-06,2025-12-23,4028.94,0
+EVT00135,CAM0047,Supermarket Sampling — Xmas 2025,Supermarket Sampling,2025-12-10,2025-12-16,2805.51,0
+EVT00136,CAM0048,Corporate Gifting Push — Back‑to‑School 2025,Corporate Gifting Push,2025-06-29,2025-07-06,2881.49,200.34
+EVT00137,CAM0048,Website Promo — Back‑to‑School 2025,Website Promo,2025-06-29,2025-07-12,4536.71,215.07
+EVT00138,CAM0048,Meta Retargeting — Back‑to‑School 2025,Meta Retargeting,2025-07-05,2025-07-19,3251.88,720.83
+EVT00139,CAM0049,Website Promo — National Day 2025,Website Promo,2025-08-08,2025-08-14,2416.2,79.25
+EVT00140,CAM0049,Lazada Mega Day — National Day 2025,Lazada Mega Day,2025-08-08,2025-08-15,5813.45,95

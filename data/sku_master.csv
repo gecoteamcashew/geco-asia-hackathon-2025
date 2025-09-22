@@ -1,0 +1,125 @@
+sku,category,flavour,pack_size_g,sku_description,unit_price_sgd,current_stock_units,dietary_tags,allergen_tags,is_halal
+ALM-130G-NATURAL-BAKED-014,Almonds,Natural Baked,130,Natural Baked Almonds 130g,5.35,3688,"halal,high_fiber,no_added_sugar",contains_tree_nuts,TRUE
+ALM-130G-ROASTED-002,Almonds,Roasted,130,Roasted Almonds 130g,5.35,1407,"gluten_free,halal",contains_tree_nuts,TRUE
+ALM-135G-HONEY-005,Almonds,Honey,135,Honey Almonds 135g,5.25,2105,"halal,high_protein,keto_friendly",contains_tree_nuts,TRUE
+ALM-135G-NATURAL-BAKED-015,Almonds,Natural Baked,135,Natural Baked Almonds 135g,5,582,"halal,high_protein,keto_friendly,no_added_sugar,vegan",contains_tree_nuts,TRUE
+ALM-135G-ROASTED-003,Almonds,Roasted,135,Roasted Almonds 135g,5,455,"gluten_free,halal,high_fiber,no_added_sugar",contains_tree_nuts,TRUE
+ALM-135G-SMOKED-009,Almonds,Smoked,135,Smoked Almonds 135g,5.4,1038,"halal,high_fiber",contains_tree_nuts,TRUE
+ALM-150G-ROASTED-004,Almonds,Roasted,150,Roasted Almonds 150g,5,669,halal,contains_tree_nuts,TRUE
+ALM-150G-SMOKED-010,Almonds,Smoked,150,Smoked Almonds 150g,5.4,2257,"halal,high_protein,no_added_sugar",contains_tree_nuts,TRUE
+ALM-300G-NATURAL-BAKED-016,Almonds,Natural Baked,300,Natural Baked Almonds 300g,2.95,3972,"gluten_free,halal,high_fiber,keto_friendly,no_added_sugar",contains_tree_nuts,TRUE
+ALM-300G-SMOKED-011,Almonds,Smoked,300,Smoked Almonds 300g,3.19,1423,"halal,keto_friendly,vegan",contains_tree_nuts,TRUE
+ALM-360G-HONEY-006,Almonds,Honey,360,Honey Almonds 360g,12.76,2293,"gluten_free,halal,vegan",contains_tree_nuts,TRUE
+ALM-360G-SMOKED-012,Almonds,Smoked,360,Smoked Almonds 360g,13.12,2619,"halal,high_fiber,keto_friendly",contains_tree_nuts,TRUE
+ALM-36G-ROASTED-001,Almonds,Roasted,36,Roasted Almonds 36g,1.6,344,"halal,keto_friendly,low_salt,no_added_sugar,vegan",contains_tree_nuts,TRUE
+ALM-36G-SMOKED-007,Almonds,Smoked,36,Smoked Almonds 36g,1.73,4698,"halal,keto_friendly,vegan",contains_tree_nuts,TRUE
+ALM-400G-NATURAL-BAKED-017,Almonds,Natural Baked,400,Natural Baked Almonds 400g,12.15,906,"halal,no_added_sugar,vegan",contains_tree_nuts,TRUE
+ALM-80G-NATURAL-BAKED-013,Almonds,Natural Baked,80,Natural Baked Almonds 80g,2.8,1452,"gluten_free,halal,low_salt",contains_tree_nuts,TRUE
+ALM-80G-SMOKED-008,Almonds,Smoked,80,Smoked Almonds 80g,3.02,998,"gluten_free,halal",contains_tree_nuts,TRUE
+CAS-120G-ROASTED-019,Cashews,Roasted,120,Roasted Cashews 120g,1.42,1462,"halal,keto_friendly",contains_tree_nuts,TRUE
+CAS-130G-NATURAL-BAKED-028,Cashews,Natural Baked,130,Natural Baked Cashews 130g,5.62,395,"halal,high_fiber,low_salt",contains_tree_nuts,TRUE
+CAS-130G-ROASTED-020,Cashews,Roasted,130,Roasted Cashews 130g,5.62,2436,"halal,high_fiber,high_protein",contains_tree_nuts,TRUE
+CAS-135G-HONEY-024,Cashews,Honey,135,Honey Cashews 135g,5.51,1846,"halal,high_protein,low_salt",contains_tree_nuts,TRUE
+CAS-135G-NATURAL-BAKED-029,Cashews,Natural Baked,135,Natural Baked Cashews 135g,5.25,1820,"halal,keto_friendly,no_added_sugar",contains_tree_nuts,TRUE
+CAS-135G-ROASTED-021,Cashews,Roasted,135,Roasted Cashews 135g,5.25,4541,"gluten_free,halal,high_fiber",contains_tree_nuts,TRUE
+CAS-150G-HONEY-025,Cashews,Honey,150,Honey Cashews 150g,5.51,4433,"halal,high_fiber,high_protein,keto_friendly,low_salt",contains_tree_nuts,TRUE
+CAS-150G-NATURAL-BAKED-030,Cashews,Natural Baked,150,Natural Baked Cashews 150g,5.25,1431,halal,contains_tree_nuts,TRUE
+CAS-300G-NATURAL-BAKED-031,Cashews,Natural Baked,300,Natural Baked Cashews 300g,3.1,2132,"halal,keto_friendly",contains_tree_nuts,TRUE
+CAS-360G-HONEY-026,Cashews,Honey,360,Honey Cashews 360g,13.4,1825,"gluten_free,halal,high_fiber,high_protein,low_salt",contains_tree_nuts,TRUE
+CAS-400G-HONEY-027,Cashews,Honey,400,Honey Cashews 400g,13.4,2366,"halal,keto_friendly,low_salt,vegan",contains_tree_nuts,TRUE
+CAS-400G-NATURAL-BAKED-032,Cashews,Natural Baked,400,Natural Baked Cashews 400g,12.76,1964,"halal,high_protein,low_salt",contains_tree_nuts,TRUE
+CAS-400G-ROASTED-022,Cashews,Roasted,400,Roasted Cashews 400g,12.76,3407,"gluten_free,halal,keto_friendly,vegan",contains_tree_nuts,TRUE
+CAS-80G-HONEY-023,Cashews,Honey,80,Honey Cashews 80g,3.09,2673,"halal,low_salt",contains_tree_nuts,TRUE
+CAS-80G-ROASTED-018,Cashews,Roasted,80,Roasted Cashews 80g,2.94,717,"gluten_free,halal,high_fiber,keto_friendly,no_added_sugar",contains_tree_nuts,TRUE
+MAC-120G-HONEY-095,Macadamia,Honey,120,Honey Macadamia 120g,2.48,3135,"halal,high_protein,no_added_sugar",contains_tree_nuts,TRUE
+MAC-130G-NATURAL-BAKED-088,Macadamia,Natural Baked,130,Natural Baked Macadamia 130g,9.36,3088,"gluten_free,halal,high_protein,keto_friendly",contains_tree_nuts,TRUE
+MAC-135G-HONEY-096,Macadamia,Honey,135,Honey Macadamia 135g,9.19,1100,"halal,low_salt,vegan",contains_tree_nuts,TRUE
+MAC-135G-NATURAL-BAKED-089,Macadamia,Natural Baked,135,Natural Baked Macadamia 135g,8.75,2332,"halal,high_fiber,high_protein,low_salt,no_added_sugar",contains_tree_nuts,TRUE
+MAC-150G-HONEY-097,Macadamia,Honey,150,Honey Macadamia 150g,9.19,4725,"gluten_free,halal,keto_friendly,no_added_sugar",contains_tree_nuts,TRUE
+MAC-150G-NATURAL-BAKED-090,Macadamia,Natural Baked,150,Natural Baked Macadamia 150g,8.75,1253,"halal,low_salt,vegan",contains_tree_nuts,TRUE
+MAC-300G-NATURAL-BAKED-091,Macadamia,Natural Baked,300,Natural Baked Macadamia 300g,5.16,2266,"halal,low_salt,vegan",contains_tree_nuts,TRUE
+MAC-360G-HONEY-098,Macadamia,Honey,360,Honey Macadamia 360g,22.33,1285,"halal,high_protein",contains_tree_nuts,TRUE
+MAC-360G-NATURAL-BAKED-092,Macadamia,Natural Baked,360,Natural Baked Macadamia 360g,21.26,305,"halal,vegan",contains_tree_nuts,TRUE
+MAC-400G-HONEY-099,Macadamia,Honey,400,Honey Macadamia 400g,22.33,229,"halal,high_fiber,keto_friendly",contains_tree_nuts,TRUE
+MAC-400G-NATURAL-BAKED-093,Macadamia,Natural Baked,400,Natural Baked Macadamia 400g,21.26,1055,halal,contains_tree_nuts,TRUE
+MAC-80G-HONEY-094,Macadamia,Honey,80,Honey Macadamia 80g,5.14,4525,"halal,high_fiber,keto_friendly",contains_tree_nuts,TRUE
+MIX-120G-COCKTAIL-MIX-074,Mixed Nuts,Cocktail Mix,120,Cocktail Mix Mixed Nuts 120g,1.44,1940,"halal,no_added_sugar,vegan",contains_tree_nuts,TRUE
+MIX-120G-FANCY-MIX-069,Mixed Nuts,Fancy Mix,120,Fancy Mix Mixed Nuts 120g,1.44,4812,"gluten_free,halal,high_fiber,low_salt,no_added_sugar",contains_tree_nuts,TRUE
+MIX-130G-COCKTAIL-MIX-075,Mixed Nuts,Cocktail Mix,130,Cocktail Mix Mixed Nuts 130g,5.72,4052,"halal,keto_friendly",contains_tree_nuts,TRUE
+MIX-130G-FANCY-MIX-070,Mixed Nuts,Fancy Mix,130,Fancy Mix Mixed Nuts 130g,5.72,2378,"gluten_free,halal,low_salt",contains_tree_nuts,TRUE
+MIX-130G-FRUITS---NUTTY-084,Mixed Nuts,Fruits & Nutty,130,Fruits & Nutty Mixed Nuts 130g,5.72,3911,"halal,high_fiber",contains_tree_nuts,TRUE
+MIX-135G-COCKTAIL-MIX-076,Mixed Nuts,Cocktail Mix,135,Cocktail Mix Mixed Nuts 135g,5.35,3499,"halal,low_salt",contains_tree_nuts,TRUE
+MIX-135G-FRUITS---NUTTY-085,Mixed Nuts,Fruits & Nutty,135,Fruits & Nutty Mixed Nuts 135g,5.35,2574,"halal,no_added_sugar",contains_tree_nuts,TRUE
+MIX-135G-RUBY-MIX-080,Mixed Nuts,Ruby Mix,135,Ruby Mix Mixed Nuts 135g,5.35,2271,"halal,high_protein,keto_friendly,low_salt,vegan",contains_tree_nuts,TRUE
+MIX-150G-FANCY-MIX-071,Mixed Nuts,Fancy Mix,150,Fancy Mix Mixed Nuts 150g,5.35,4158,"halal,keto_friendly",contains_tree_nuts,TRUE
+MIX-300G-COCKTAIL-MIX-077,Mixed Nuts,Cocktail Mix,300,Cocktail Mix Mixed Nuts 300g,3.16,4067,"halal,low_salt,no_added_sugar",contains_tree_nuts,TRUE
+MIX-300G-RUBY-MIX-081,Mixed Nuts,Ruby Mix,300,Ruby Mix Mixed Nuts 300g,3.16,4532,halal,contains_tree_nuts,TRUE
+MIX-360G-FANCY-MIX-072,Mixed Nuts,Fancy Mix,360,Fancy Mix Mixed Nuts 360g,13,109,halal,contains_tree_nuts,TRUE
+MIX-360G-FRUITS---NUTTY-086,Mixed Nuts,Fruits & Nutty,360,Fruits & Nutty Mixed Nuts 360g,13,4736,"halal,high_fiber,low_salt",contains_tree_nuts,TRUE
+MIX-36G-FRUITS---NUTTY-082,Mixed Nuts,Fruits & Nutty,36,Fruits & Nutty Mixed Nuts 36g,1.71,2553,"halal,high_fiber",contains_tree_nuts,TRUE
+MIX-400G-COCKTAIL-MIX-078,Mixed Nuts,Cocktail Mix,400,Cocktail Mix Mixed Nuts 400g,13,457,"halal,high_protein,vegan",contains_tree_nuts,TRUE
+MIX-400G-FANCY-MIX-073,Mixed Nuts,Fancy Mix,400,Fancy Mix Mixed Nuts 400g,13,4599,"halal,keto_friendly",contains_tree_nuts,TRUE
+MIX-400G-FRUITS---NUTTY-087,Mixed Nuts,Fruits & Nutty,400,Fruits & Nutty Mixed Nuts 400g,13,2986,halal,contains_tree_nuts,TRUE
+MIX-80G-FANCY-MIX-068,Mixed Nuts,Fancy Mix,80,Fancy Mix Mixed Nuts 80g,3,4523,halal,contains_tree_nuts,TRUE
+MIX-80G-FRUITS---NUTTY-083,Mixed Nuts,Fruits & Nutty,80,Fruits & Nutty Mixed Nuts 80g,3,1492,"halal,high_fiber,keto_friendly,low_salt",contains_tree_nuts,TRUE
+MIX-80G-RUBY-MIX-079,Mixed Nuts,Ruby Mix,80,Ruby Mix Mixed Nuts 80g,3,4934,"gluten_free,halal",contains_tree_nuts,TRUE
+PEA-120G-CRACKER-061,Peanuts,Cracker,120,Cracker Peanuts 120g,0.54,2576,"halal,low_salt,vegan",contains_peanut,TRUE
+PEA-120G-ROASTED-047,Peanuts,Roasted,120,Roasted Peanuts 120g,0.54,3412,"halal,high_fiber",contains_peanut,TRUE
+PEA-120G-SUGAR-053,Peanuts,Sugar,120,Sugar Peanuts 120g,0.54,4736,"halal,high_protein,low_salt",contains_peanut,TRUE
+PEA-130G-IKAN-BILIS-067,Peanuts,Ikan Bilis,130,Ikan Bilis Peanuts 130g,2.14,3582,halal,contains_peanut,TRUE
+PEA-130G-ROASTED-048,Peanuts,Roasted,130,Roasted Peanuts 130g,2.14,3611,halal,contains_peanut,TRUE
+PEA-130G-SUGAR-054,Peanuts,Sugar,130,Sugar Peanuts 130g,2.14,3067,halal,contains_peanut,TRUE
+PEA-135G-CRACKER-062,Peanuts,Cracker,135,Cracker Peanuts 135g,2,4802,"halal,high_fiber,low_salt",contains_peanut,TRUE
+PEA-135G-SUGAR-055,Peanuts,Sugar,135,Sugar Peanuts 135g,2,4060,"gluten_free,halal",contains_peanut,TRUE
+PEA-150G-ROASTED-049,Peanuts,Roasted,150,Roasted Peanuts 150g,2,2166,"halal,keto_friendly,low_salt",contains_peanut,TRUE
+PEA-150G-SUGAR-056,Peanuts,Sugar,150,Sugar Peanuts 150g,2,4768,"gluten_free,halal,high_protein",contains_peanut,TRUE
+PEA-300G-CRACKER-063,Peanuts,Cracker,300,Cracker Peanuts 300g,1.18,539,"gluten_free,halal,high_fiber,keto_friendly",contains_peanut,TRUE
+PEA-300G-ROASTED-050,Peanuts,Roasted,300,Roasted Peanuts 300g,1.18,354,"gluten_free,halal,high_fiber,keto_friendly",contains_peanut,TRUE
+PEA-300G-SUGAR-057,Peanuts,Sugar,300,Sugar Peanuts 300g,1.18,2363,"halal,high_fiber,high_protein,no_added_sugar",contains_peanut,TRUE
+PEA-360G-ROASTED-051,Peanuts,Roasted,360,Roasted Peanuts 360g,4.86,3121,"halal,high_protein,keto_friendly,low_salt,no_added_sugar,vegan",contains_peanut,TRUE
+PEA-360G-SUGAR-058,Peanuts,Sugar,360,Sugar Peanuts 360g,4.86,3771,"gluten_free,halal,keto_friendly,no_added_sugar",contains_peanut,TRUE
+PEA-36G-IKAN-BILIS-065,Peanuts,Ikan Bilis,36,Ikan Bilis Peanuts 36g,0.64,1802,halal,contains_peanut,TRUE
+PEA-36G-ROASTED-045,Peanuts,Roasted,36,Roasted Peanuts 36g,0.64,4884,"gluten_free,halal,no_added_sugar",contains_peanut,TRUE
+PEA-36G-SUGAR-052,Peanuts,Sugar,36,Sugar Peanuts 36g,0.64,3174,"gluten_free,halal,high_fiber,no_added_sugar",contains_peanut,TRUE
+PEA-400G-CRACKER-064,Peanuts,Cracker,400,Cracker Peanuts 400g,4.86,3216,"halal,keto_friendly,no_added_sugar",contains_peanut,TRUE
+PEA-400G-SUGAR-059,Peanuts,Sugar,400,Sugar Peanuts 400g,4.86,4608,"halal,low_salt,no_added_sugar",contains_peanut,TRUE
+PEA-80G-CRACKER-060,Peanuts,Cracker,80,Cracker Peanuts 80g,1.12,1872,"halal,high_fiber,high_protein,keto_friendly,low_salt,no_added_sugar",contains_peanut,TRUE
+PEA-80G-IKAN-BILIS-066,Peanuts,Ikan Bilis,80,Ikan Bilis Peanuts 80g,1.12,367,"halal,high_fiber,keto_friendly,low_salt,no_added_sugar",contains_peanut,TRUE
+PEA-80G-ROASTED-046,Peanuts,Roasted,80,Roasted Peanuts 80g,1.12,3532,"gluten_free,halal,low_salt",contains_peanut,TRUE
+PIS-120G-BAKED-034,Pistachios,Baked,120,Baked Pistachios 120g,1.49,2669,"gluten_free,halal,high_fiber,keto_friendly,low_salt",contains_tree_nuts,TRUE
+PIS-130G-BAKED-035,Pistachios,Baked,130,Baked Pistachios 130g,5.88,1714,"halal,high_fiber,high_protein,no_added_sugar",contains_tree_nuts,TRUE
+PIS-135G-SALTED-040,Pistachios,Salted,135,Salted Pistachios 135g,5.5,145,"halal,high_fiber,no_added_sugar",contains_tree_nuts,TRUE
+PIS-150G-SALTED-041,Pistachios,Salted,150,Salted Pistachios 150g,5.5,1094,"halal,high_protein",contains_tree_nuts,TRUE
+PIS-300G-BAKED-036,Pistachios,Baked,300,Baked Pistachios 300g,3.25,2522,halal,contains_tree_nuts,TRUE
+PIS-300G-SALTED-042,Pistachios,Salted,300,Salted Pistachios 300g,3.25,4235,halal,contains_tree_nuts,TRUE
+PIS-360G-BAKED-037,Pistachios,Baked,360,Baked Pistachios 360g,13.37,2589,"halal,high_fiber,low_salt",contains_tree_nuts,TRUE
+PIS-360G-SALTED-043,Pistachios,Salted,360,Salted Pistachios 360g,13.37,4370,"halal,keto_friendly",contains_tree_nuts,TRUE
+PIS-36G-SALTED-038,Pistachios,Salted,36,Salted Pistachios 36g,1.76,1490,"halal,high_fiber",contains_tree_nuts,TRUE
+PIS-400G-SALTED-044,Pistachios,Salted,400,Salted Pistachios 400g,13.37,3237,"halal,high_protein,low_salt,vegan",contains_tree_nuts,TRUE
+PIS-80G-BAKED-033,Pistachios,Baked,80,Baked Pistachios 80g,3.08,2812,"halal,keto_friendly,no_added_sugar",contains_tree_nuts,TRUE
+PIS-80G-SALTED-039,Pistachios,Salted,80,Salted Pistachios 80g,3.08,1307,"gluten_free,halal,high_protein,low_salt",contains_tree_nuts,TRUE
+SNA-120G-COATED-GREEN-PEAS-107,Snacks,Coated Green Peas,120,Coated Green Peas Snacks 120g,0.81,3615,"halal,high_protein,low_salt",contains_gluten,TRUE
+SNA-120G-MIXED-SNACKS-120,Snacks,Mixed Snacks,120,Mixed Snacks Snacks 120g,0.81,4253,"halal,high_fiber,keto_friendly",,TRUE
+SNA-120G-SATAY-BROAD-BEANS-114,Snacks,Satay Broad Beans,120,Satay Broad Beans Snacks 120g,0.81,4816,"gluten_free,halal,high_fiber,keto_friendly",,TRUE
+SNA-130G-COATED-GREEN-PEAS-108,Snacks,Coated Green Peas,130,Coated Green Peas Snacks 130g,3.21,1577,"halal,high_fiber",contains_gluten,TRUE
+SNA-130G-SATAY-BROAD-BEANS-115,Snacks,Satay Broad Beans,130,Satay Broad Beans Snacks 130g,3.21,3064,"gluten_free,halal",,TRUE
+SNA-135G-MIXED-SNACKS-121,Snacks,Mixed Snacks,135,Mixed Snacks Snacks 135g,3,606,"gluten_free,halal,keto_friendly",,TRUE
+SNA-150G-COATED-GREEN-PEAS-109,Snacks,Coated Green Peas,150,Coated Green Peas Snacks 150g,3,851,"gluten_free,halal,high_protein",contains_gluten,TRUE
+SNA-150G-MIXED-SNACKS-122,Snacks,Mixed Snacks,150,Mixed Snacks Snacks 150g,3,4393,"gluten_free,halal,high_protein",,TRUE
+SNA-150G-SATAY-BROAD-BEANS-116,Snacks,Satay Broad Beans,150,Satay Broad Beans Snacks 150g,3,4281,"halal,low_salt",,TRUE
+SNA-300G-COATED-GREEN-PEAS-110,Snacks,Coated Green Peas,300,Coated Green Peas Snacks 300g,1.77,530,"halal,low_salt",contains_gluten,TRUE
+SNA-300G-MIXED-SNACKS-123,Snacks,Mixed Snacks,300,Mixed Snacks Snacks 300g,1.77,639,"halal,low_salt",,TRUE
+SNA-300G-SATAY-BROAD-BEANS-117,Snacks,Satay Broad Beans,300,Satay Broad Beans Snacks 300g,1.77,2196,"halal,vegan",,TRUE
+SNA-36G-COATED-GREEN-PEAS-106,Snacks,Coated Green Peas,36,Coated Green Peas Snacks 36g,0.96,2659,"halal,vegan",contains_gluten,TRUE
+SNA-36G-MIXED-SNACKS-119,Snacks,Mixed Snacks,36,Mixed Snacks Snacks 36g,0.96,4944,halal,,TRUE
+SNA-36G-SATAY-BROAD-BEANS-112,Snacks,Satay Broad Beans,36,Satay Broad Beans Snacks 36g,0.96,2569,"halal,high_fiber,low_salt",,TRUE
+SNA-400G-COATED-GREEN-PEAS-111,Snacks,Coated Green Peas,400,Coated Green Peas Snacks 400g,7.29,2927,"halal,low_salt,no_added_sugar,vegan",contains_gluten,TRUE
+SNA-400G-MIXED-SNACKS-124,Snacks,Mixed Snacks,400,Mixed Snacks Snacks 400g,7.29,2965,"gluten_free,halal,vegan",,TRUE
+SNA-400G-SATAY-BROAD-BEANS-118,Snacks,Satay Broad Beans,400,Satay Broad Beans Snacks 400g,7.29,4724,halal,,TRUE
+SNA-80G-SATAY-BROAD-BEANS-113,Snacks,Satay Broad Beans,80,Satay Broad Beans Snacks 80g,1.68,1985,"halal,high_protein,vegan",,TRUE
+WAL-120G-NATURAL-BAKED-100,Walnuts,Natural Baked,120,Natural Baked Walnuts 120g,1.35,455,"gluten_free,halal",contains_tree_nuts,TRUE
+WAL-130G-NATURAL-BAKED-101,Walnuts,Natural Baked,130,Natural Baked Walnuts 130g,5.35,984,"halal,high_fiber",contains_tree_nuts,TRUE
+WAL-135G-NATURAL-BAKED-102,Walnuts,Natural Baked,135,Natural Baked Walnuts 135g,5,2763,"gluten_free,halal,high_fiber,keto_friendly,no_added_sugar",contains_tree_nuts,TRUE
+WAL-300G-NATURAL-BAKED-103,Walnuts,Natural Baked,300,Natural Baked Walnuts 300g,2.95,1861,"halal,high_fiber,low_salt",contains_tree_nuts,TRUE
+WAL-360G-NATURAL-BAKED-104,Walnuts,Natural Baked,360,Natural Baked Walnuts 360g,12.15,1350,halal,contains_tree_nuts,TRUE
+WAL-400G-NATURAL-BAKED-105,Walnuts,Natural Baked,400,Natural Baked Walnuts 400g,12.15,4700,"halal,keto_friendly,no_added_sugar,vegan",contains_tree_nuts,TRUE
